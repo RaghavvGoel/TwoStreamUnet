@@ -211,7 +211,7 @@ class BayesUNet3DKG(tf.keras.Model):
                                         name='dblock_logvar_{}'.format(layer_depth+1),
                                         dropout=dropout,
                                         regularizer=regularizer,
-                                        dropout_type='none',
+                                        dropout_type='none', 
                                         batch_norm=batch_norm
                                                   )
                                     )
