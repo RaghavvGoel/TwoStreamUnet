@@ -209,7 +209,9 @@ def main(filepath = '5. 54 AC_Video 3.mp4', model_folder = 'bayes_3d_kg_pnb_e_5_
     while success:
         if not SLIDING_WINDOW:
             if count == 8:
-                epi_mean, epi_var = perform_inference(image_numpy, model, '_Bayes3DUNetKG_', 5)
+                epi_mean, epi_var = perform_inference(image_numpy, model, '_Bayes3DUNetKG_', 1)
+                # model.save('models')
+                # exit()
                 model_output = tf.nn.softmax(epi_mean).numpy()
                 needle_softmax = model_output[0,:,:,:,1]*255.
                 needle_softmax = needle_softmax.astype(np.uint8)
@@ -235,68 +237,68 @@ def main(filepath = '5. 54 AC_Video 3.mp4', model_folder = 'bayes_3d_kg_pnb_e_5_
         count += 1      
         total_count += 1
     
+
     return frames, needle_maps, nerve_maps, vessel_maps
     
 if __name__ == '__main__':
 
-    # start = time.time()
-    # frames, needle_maps, nerve_maps, vessel_maps =  main()
-    # maps_time = time.time()
+    start = time.time()
+    frames, needle_maps, nerve_maps, vessel_maps =  main()
+    maps_time = time.time()
 
-    # print('Time Taken to compute maps : ', maps_time - start)
+    print('Time Taken to compute maps : ', maps_time - start)
 
-    # min_dist = np.Inf
-    # for i in range(len(needle_maps)):
-    #     curr_dist = calculate_distance(needle_maps[i], nerve_maps[i], (256,256))
-    #     min_dist = min(curr_dist, min_dist)
-    #     print(curr_dist)
+    min_dist = np.Inf
+    for i in range(len(needle_maps)):
+        curr_dist = calculate_distance(needle_maps[i], nerve_maps[i], (256,256))
+        min_dist = min(curr_dist, min_dist)
     
-    # end = time.time()
+    end = time.time()
 
-    # print('Time taken to compute minimum distance : ', end - maps_time)
+    print('Time taken to compute minimum distance : ', end - maps_time)
 
-    # print(min_dist)
+    print(min_dist)
 
     '''
     Run model for all videos - comment out
     '''
-    run = 'positive'
+    # run = 'negative'
 
-    if run == 'positive':
-        root_dir = '../Positives/'
-        dest_csv = '../pnb_distances_positive.csv'
+    # if run == 'positive':
+    #     root_dir = '../Positives/'
+    #     dest_csv = '../pnb_distances_positive.csv'
  
-    else:
-        root_dir = '../Negatives/'
-        dest_csv = '../pnb_distances_negative.csv'
+    # else:
+    #     root_dir = '../Negatives/'
+    #     dest_csv = '../pnb_distances_negative.csv'
 
-    folders, distances = [], []
+    # folders, distances = [], []
 
-    df = pd.DataFrame(columns=['Folder', 'Distance'])
+    # df = pd.DataFrame(columns=['Folder', 'Distance'])
 
-    for filepath in tqdm(os.listdir(root_dir)):
-        folder_path = os.path.join(root_dir, filepath)
-        vid_file = glob(os.path.join(folder_path, "*.mp4"))
+    # for filepath in tqdm(os.listdir(root_dir)):
+    #     folder_path = os.path.join(root_dir, filepath)
+    #     vid_file = glob(os.path.join(folder_path, "*.mp4"))
 
-        assert len(vid_file) == 1
+    #     assert len(vid_file) == 1
 
-        frames, needle_maps, nerve_maps, vessel_maps =  main(filepath = vid_file[0])
+    #     frames, needle_maps, nerve_maps, vessel_maps =  main(filepath = vid_file[0])
 
-        min_dist = np.Inf
-        for i in range(len(needle_maps)):
-            curr_dist = calculate_distance(needle_maps[i], nerve_maps[i], (256,256))
-            min_dist = min(curr_dist, min_dist)
+    #     min_dist = np.Inf
+    #     for i in range(len(needle_maps)):
+    #         curr_dist = calculate_distance(needle_maps[i], nerve_maps[i], (256,256))
+    #         min_dist = min(curr_dist, min_dist)
 
-        print(min_dist)
+    #     print(min_dist)
 
-        folders.append(filepath)
-        distances.append(min_dist)
+    #     folders.append(filepath)
+    #     distances.append(min_dist)
 
         
-    df['Folder'] = folders
-    df['Distance'] = distances
+    # df['Folder'] = folders
+    # df['Distance'] = distances
     
-    df.to_csv(dest_csv)
+    # df.to_csv(dest_csv)
 
 
 

@@ -1,7 +1,6 @@
 # -*- coding: utf-8 -*-
 """
 Created on Tue Jun 23 02:28:23 2020
-
 @author: edward
 """
 import tensorflow as tf
