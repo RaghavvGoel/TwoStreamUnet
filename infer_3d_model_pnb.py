@@ -83,10 +83,12 @@ def preprocess_img(img, img_start = [0,0], img_end = [774,512]):
     img_out = cv2.resize(img_out, dsize=(256, 256), interpolation = cv2.INTER_NEAREST)
     return img_out[:,:, np.newaxis].astype(np.float32)
 
-def calculate_distance(needle, nerve, shape):
+def calculate_distance(needle, nerve, vessel, shape, type = 'centroid'):
+    needle_thresh, nerve_thresh, vessel_thresh = 0, 0, 0 #minimum contour area 
     edged = (needle + nerve).astype(np.uint8)
     needle = needle.astype(np.uint8)
     nerve = nerve.astype(np.uint8)
+    vessel = vessel.astype(np.uint8)
     # edged = np.expand_dims(edged, axis = 0)
     # edged = cv2.cvtColor(edged, cv2.COLOR_BGR2GRAY)
     cnts_edged, _ = cv2.findContours(edged.copy(), cv2.RETR_EXTERNAL,
@@ -94,6 +96,8 @@ def calculate_distance(needle, nerve, shape):
     cnts_needle, _ = cv2.findContours(needle.copy(), cv2.RETR_EXTERNAL,
 	cv2.CHAIN_APPROX_SIMPLE)
     cnts_nerve, _ = cv2.findContours(nerve.copy(), cv2.RETR_EXTERNAL,
+	cv2.CHAIN_APPROX_SIMPLE)
+    cnts_vessel, _ = cv2.findContours(vessel.copy(), cv2.RETR_EXTERNAL,
 	cv2.CHAIN_APPROX_SIMPLE)
     # cnts_edged = imutils.grab_contours(cnts_edged)
     img = cv2.drawContours(edged, cnts_edged, -1, (0, 255, 0), 3)
@@ -103,33 +107,82 @@ def calculate_distance(needle, nerve, shape):
 	# # if the contour is not sufficiently large, ignore it
     #     if cv2.contourArea(c) < 100:
     #         continue
-    needle_centroids, nerve_centroids = [], []
-    for c in cnts_needle:
-        M = cv2.moments(c)
-        if M["m00"] == 0:
-            continue
-        cX = int(M["m10"] / M["m00"])
-        cY = int(M["m01"] / M["m00"])
-        needle_centroids.append((cX, cY))
-
-    for c in cnts_nerve:
-        M = cv2.moments(c)
-        if M["m00"] == 0:
-            continue
-        cX = int(M["m10"] / M["m00"])
-        cY = int(M["m01"] / M["m00"])
-        nerve_centroids.append((cX, cY))
-    
     min_dist = np.Inf
-    for cent in needle_centroids:
-        cent, needle_centroids = np.array([cent]), np.array(needle_centroids)
-        try:
-            distances = np.linalg.norm(cent - nerve_centroids)
-            min_dist = min(np.amin(distances), min_dist)
-        except:
-            continue
 
-    # return needle_centroids, nerve_centroids
+    if type == 'centroid':
+        needle_centroids, nerve_centroids, vessel_centroids = [], [], []
+        for c in cnts_needle:
+            if cv2.contourArea(c) < needle_thresh:
+                continue
+            M = cv2.moments(c)
+            if M["m00"] == 0:
+                continue
+            cX = int(M["m10"] / M["m00"])
+            cY = int(M["m01"] / M["m00"])
+            needle_centroids.append((cX, cY))
+
+        for c in cnts_nerve:
+            if cv2.contourArea(c) < nerve_thresh:
+                continue
+            M = cv2.moments(c)
+            if M["m00"] == 0:
+                continue
+            cX = int(M["m10"] / M["m00"])
+            cY = int(M["m01"] / M["m00"])
+            nerve_centroids.append((cX, cY))
+        
+        for c in cnts_vessel:
+            if cv2.contourArea(c) < vessel_thresh:
+                continue
+            M = cv2.moments(c)
+            if M["m00"] == 0:
+                continue
+            cX = int(M["m10"] / M["m00"])
+            cY = int(M["m01"] / M["m00"])
+            vessel_centroids.append((cX, cY))
+        
+        for cent in needle_centroids:
+            cent = np.array([cent])
+            cent = np.repeat(cent, len(nerve_centroids), axis = 0)
+            try:
+                distances = np.linalg.norm(cent - nerve_centroids, axis = 1)
+                if np.amin(distances) == 0 or np.amin(distances) == 1.:
+                    continue
+                min_dist = min(np.amin(distances), min_dist)
+            except:
+                continue
+        
+        if min_dist == np.Inf:
+            for cent in needle_centroids:
+                cent = np.array([cent])
+                try:
+                    cent = np.repeat(cent, len(vessel), axis = 0)
+                    distances = np.linalg.norm(cent - vessel_centroids, axis = 1)
+                    min_dist = min(np.amin(distances), min_dist)
+                except:
+                    continue
+    
+    elif type == 'pointwise':
+        for cnt_needle in cnts_needle:
+            for cnt_nerve in cnts_nerve:
+                cnt_needle, cnt_nerve = np.squeeze(cnt_needle), np.squeeze(cnt_nerve)
+                for pt in range(cnt_needle.shape[0]):
+                    needle_pt = np.expand_dims(cnt_needle[pt], axis = 0)
+                    needle_pt = np.repeat(needle_pt, cnts_nerve.shape[0], axis = 0)
+                    distances = np.linalg.norm(needle_pt - cnt_nerve, axis = 0)
+                    min_dist = min(np.amin(distances), min_dist)
+
+        if min_dist == np.Inf:
+            for cnt_needle in cnts_needle:
+                for cnt_nerve in cnts_vessel:
+                    cnt_needle, cnt_vessel = np.squeeze(cnt_needle), np.squeeze(cnts_vessel)
+                    for pt in range(cnt_needle.shape[0]):
+                        needle_pt = np.expand_dims(cnt_needle[pt], axis = 0)
+                        needle_pt = np.repeat(needle_pt, cnt_vessel.shape[0], axis = 0)
+                        distances = np.linalg.norm(needle_pt - cnt_vessel, axis = 0)
+                        min_dist = min(np.amin(distances), min_dist)
+
+
     return min_dist
 
 def postprocess_img(img, minLineLength = 0, maxLineGap = 100):
@@ -223,7 +276,8 @@ def main(filepath = '5. 54 AC_Video 3.mp4', model_folder = 'bayes_3d_kg_pnb_e_5_
                     needle_frame = needle_softmax[i,:,:]
                     updated_map = postprocess_img(needle_frame)
                     # cv2.imwrite('/home/nthumbav/Downloads/temp/{}.png'.format(total_count), updated_map)
-                    needle_maps.append(updated_map)
+                    # needle_maps.append(updated_map) # comment out for raw outputs
+                    needle_maps.append(needle_frame)
                     nerve_maps.append(nerve_softmax[i,:,:])
                     vessel_maps.append(vessel_softmax[i,:,:])
                     frames.append(image_numpy[i,:,:,:])
@@ -242,63 +296,63 @@ def main(filepath = '5. 54 AC_Video 3.mp4', model_folder = 'bayes_3d_kg_pnb_e_5_
     
 if __name__ == '__main__':
 
-    start = time.time()
-    frames, needle_maps, nerve_maps, vessel_maps =  main()
-    maps_time = time.time()
+    # start = time.time()
+    # frames, needle_maps, nerve_maps, vessel_maps =  main()
+    # maps_time = time.time()
 
-    print('Time Taken to compute maps : ', maps_time - start)
+    # print('Time Taken to compute maps : ', maps_time - start)
 
-    min_dist = np.Inf
-    for i in range(len(needle_maps)):
-        curr_dist = calculate_distance(needle_maps[i], nerve_maps[i], (256,256))
-        min_dist = min(curr_dist, min_dist)
+    # min_dist = np.Inf
+    # for i in range(len(needle_maps)):
+    #     curr_dist = calculate_distance(needle_maps[i], nerve_maps[i], vessel_maps[i], (256,256), 'centroid')
+    #     min_dist = min(curr_dist, min_dist)
     
-    end = time.time()
+    # end = time.time()
 
-    print('Time taken to compute minimum distance : ', end - maps_time)
+    # print('Time taken to compute minimum distance : ', end - maps_time)
 
-    print(min_dist)
+    # print(min_dist)
 
     '''
     Run model for all videos - comment out
     '''
-    # run = 'negative'
+    run = 'positives'
 
-    # if run == 'positive':
-    #     root_dir = '../Positives/'
-    #     dest_csv = '../pnb_distances_positive.csv'
+    if run == 'positive':
+        root_dir = '../Positives/'
+        dest_csv = '../pnb_distances_positive.csv'
  
-    # else:
-    #     root_dir = '../Negatives/'
-    #     dest_csv = '../pnb_distances_negative.csv'
+    else:
+        root_dir = '../Negatives/'
+        dest_csv = '../pnb_distances_negative.csv'
 
-    # folders, distances = [], []
+    folders, distances = [], []
 
-    # df = pd.DataFrame(columns=['Folder', 'Distance'])
+    df = pd.DataFrame(columns=['Folder', 'Distance'])
 
-    # for filepath in tqdm(os.listdir(root_dir)):
-    #     folder_path = os.path.join(root_dir, filepath)
-    #     vid_file = glob(os.path.join(folder_path, "*.mp4"))
+    for filepath in tqdm(os.listdir(root_dir)):
+        folder_path = os.path.join(root_dir, filepath)
+        vid_file = glob(os.path.join(folder_path, "*.mp4"))
 
-    #     assert len(vid_file) == 1
+        assert len(vid_file) == 1
 
-    #     frames, needle_maps, nerve_maps, vessel_maps =  main(filepath = vid_file[0])
+        frames, needle_maps, nerve_maps, vessel_maps =  main(filepath = vid_file[0])
 
-    #     min_dist = np.Inf
-    #     for i in range(len(needle_maps)):
-    #         curr_dist = calculate_distance(needle_maps[i], nerve_maps[i], (256,256))
-    #         min_dist = min(curr_dist, min_dist)
+        min_dist = np.Inf
+        for i in range(len(needle_maps)):
+            curr_dist = calculate_distance(needle_maps[i], nerve_maps[i], vessel_maps[i], (256,256), 'centroid')
+            min_dist = min(curr_dist, min_dist)
 
-    #     print(min_dist)
+        print(min_dist)
 
-    #     folders.append(filepath)
-    #     distances.append(min_dist)
+        folders.append(filepath)
+        distances.append(min_dist)
 
         
-    # df['Folder'] = folders
-    # df['Distance'] = distances
+    df['Folder'] = folders
+    df['Distance'] = distances
     
-    # df.to_csv(dest_csv)
+    df.to_csv(dest_csv)
 
 
 
