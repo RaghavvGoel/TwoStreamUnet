@@ -13,6 +13,7 @@ import matplotlib.pyplot as plt
 import time
 from tqdm import tqdm
 import pandas as pd
+import ipdb
 
 SLIDING_WINDOW = False
 
@@ -250,18 +251,31 @@ def perform_inference(input_list, model, model_name, n_mc_samples, is_training=T
     
     return epi_mean, epi_var
 
-def main(filepath = '5. 54 AC_Video 3.mp4', model_folder = 'bayes_3d_kg_pnb_e_5_l_bayesian_combined_kg_f_8_model_bayes_3d_unet_kg_4-26-2022-14-36'):
+def main(filepath, model_folder, image_output_loc, ground_truth_path):
+    
     model = create_model(num_classes= 4, depth = 4, model_name = '_Bayes3DUNetKG_')
     model = load_model(input_image_shape = (256,256,1), n_input_frames = 8, n_classes = 4, depth = 4, model_name = '_Bayes3DUNetKG_', model_epoch = '2_best_bn_t', filepath = model_folder)
-    video_file = filepath
     images, count, total_count, image_numpy = [], 0, 0, np.zeros((8, 256, 256, 1))
     frames, needle_maps, nerve_maps, vessel_maps = [], [], [], []
-    # parse out images from video
-    vid_file = cv2.VideoCapture(video_file)
-    success, image = vid_file.read()
-    while success:
+
+    # if video then parse out images else load images from filepath : syntax  'frame_' + '000{}'.format(1).zfill(6) + '.PNG'
+    if 'mp4' in filepath:
+        video_input = True
+        video_file = filepath
+        vid_file = cv2.VideoCapture(video_file)
+        success, image = vid_file.read()
+    else:
+        video_input = False
+        
+    # ipdb.set_trace()
+    # while success:
+    for i in range(1,596): # total 595 images
+        image_name = 'frame_' + '000{}'.format(i).zfill(6) + '.PNG'
+        image_path = os.path.join(filepath, image_name)
+        image = cv2.imread(image_path)
         if not SLIDING_WINDOW:
             if count == 8:
+                # ipdb.set_trace()
                 epi_mean, epi_var = perform_inference(image_numpy, model, '_Bayes3DUNetKG_', 1)
                 # model.save('models')
                 # exit()
@@ -275,7 +289,7 @@ def main(filepath = '5. 54 AC_Video 3.mp4', model_folder = 'bayes_3d_kg_pnb_e_5_
                 for i in range(8):
                     needle_frame = needle_softmax[i,:,:]
                     updated_map = postprocess_img(needle_frame)
-                    # cv2.imwrite('/home/nthumbav/Downloads/temp/{}.png'.format(total_count), updated_map)
+                    # cv2.imwrite(image_output_loc + '{}.png'.format(total_count), updated_map)
                     # needle_maps.append(updated_map) # comment out for raw outputs
                     needle_maps.append(needle_frame)
                     nerve_maps.append(nerve_softmax[i,:,:])
@@ -285,74 +299,113 @@ def main(filepath = '5. 54 AC_Video 3.mp4', model_folder = 'bayes_3d_kg_pnb_e_5_
                 count = 0
                 # flow_frames = dense_optical_flow(frames = image_numpy)
                 # pass
-        
+        # print("image shape before preprocessing: ", image.shape)
         image_numpy[count, :, :, :] = preprocess_img(image)        
-        success, image = vid_file.read()
+        # ipdb.set_trace()
+        # print("image shape AFTER preprocessing: ", image_numpy[0].shape)
+        if video_input:
+            success, image = vid_file.read()
+        
+
         count += 1      
         total_count += 1
-    
+
+    # SAVE OG IMAGES and Their NEEDLE OVERLAP 
+    for i in range(len(frames)):
+        print("i = ", i)
+        # cv2.imwrite(image_output_loc + 'og_{}.png'.format(i), frames[i])
+        # write needle_maps on frames and save
+        frames_ = np.concatenate([frames[i]]*3,axis=-1)
+        frames_[:,:,0] = needle_maps[i]
+        # cv2.imwrite(image_output_loc + 'og_needle_overlayed_{}.png'.format(i), frames_)
+        frame_tmp = cv2.vconcat([np.concatenate([frames[i]]*3,axis=-1), frames_])
+        # cv2.imwrite(image_output_loc + 'og_needle_{}.png'.format(i), frame_tmp)
+
+        # PLOT GROUND TRUTH FRAMES AS WELL 
+        gt_image_name = 'frame_' + '000{}'.format(i+1).zfill(6) + '.png'
+        gt_image_path = os.path.join(ground_truth_path, gt_image_name)
+        gt_image = cv2.imread(gt_image_path).astype(np.float32)
+        gt_image = cv2.resize(gt_image, dsize=(256, 256), interpolation = cv2.INTER_NEAREST)
+        # ipdb.set_trace()
+        frame_tmp_ = cv2.vconcat([frame_tmp.astype(np.float32), gt_image])
+        cv2.imwrite(image_output_loc + 'og_needle_{}.png'.format(i), frame_tmp_)
+
 
     return frames, needle_maps, nerve_maps, vessel_maps
     
 if __name__ == '__main__':
 
-    # start = time.time()
-    # frames, needle_maps, nerve_maps, vessel_maps =  main()
-    # maps_time = time.time()
+    start = time.time()
+    data_folder_path = 'data/task_positives_11-2022_04_12_18_28_14-segmentation mask 1.1/'
+    # filepath = 'test_video.mp4'
+    filepath = os.path.join(data_folder_path, 'JPEGImages')
+    ground_truth_path = os.path.join(data_folder_path, 'SegmentationClass')
 
-    # print('Time Taken to compute maps : ', maps_time - start)
+    model_folder = 'bayes_3d_kg_pnb_e_5_l_bayesian_combined_kg_f_8_model_bayes_3d_unet_kg_4-26-2022-14-36'
 
-    # min_dist = np.Inf
-    # for i in range(len(needle_maps)):
-    #     curr_dist = calculate_distance(needle_maps[i], nerve_maps[i], vessel_maps[i], (256,256), 'centroid')
-    #     min_dist = min(curr_dist, min_dist)
+    image_output_loc = 'exp/3/'
+    # location to save output images     
+    if not os.path.exists(image_output_loc):
+        os.makedirs(image_output_loc)
     
-    # end = time.time()
+    frames, needle_maps, nerve_maps, vessel_maps =  main(filepath, model_folder, image_output_loc, ground_truth_path)
+    
+    maps_time = time.time()
 
-    # print('Time taken to compute minimum distance : ', end - maps_time)
+    print('Time Taken to compute maps : ', maps_time - start)
 
-    # print(min_dist)
+
+    min_dist = np.Inf
+    for i in range(len(needle_maps)):
+        curr_dist = calculate_distance(needle_maps[i], nerve_maps[i], vessel_maps[i], (256,256), 'centroid')
+        min_dist = min(curr_dist, min_dist)
+    
+    end = time.time()
+
+    print('Time taken to compute minimum distance : ', end - maps_time)
+
+    print(min_dist)
 
     '''
     Run model for all videos - comment out
     '''
-    run = 'positives'
+    # run = 'positive'
 
-    if run == 'positive':
-        root_dir = '../Positives/'
-        dest_csv = '../pnb_distances_positive.csv'
+    # if run == 'positive':
+    #     root_dir = '../Positives/'
+    #     dest_csv = '../pnb_distances_positive.csv'
  
-    else:
-        root_dir = '../Negatives/'
-        dest_csv = '../pnb_distances_negative.csv'
+    # else:
+    #     root_dir = '../Negatives/'
+    #     dest_csv = '../pnb_distances_negative.csv'
 
-    folders, distances = [], []
+    # folders, distances = [], []
 
-    df = pd.DataFrame(columns=['Folder', 'Distance'])
+    # df = pd.DataFrame(columns=['Folder', 'Distance'])
 
-    for filepath in tqdm(os.listdir(root_dir)):
-        folder_path = os.path.join(root_dir, filepath)
-        vid_file = glob(os.path.join(folder_path, "*.mp4"))
+    # for filepath in tqdm(os.listdir(root_dir)):
+    #     folder_path = os.path.join(root_dir, filepath)
+    #     vid_file = glob(os.path.join(folder_path, "*.mp4"))
 
-        assert len(vid_file) == 1
+    #     assert len(vid_file) == 1
 
-        frames, needle_maps, nerve_maps, vessel_maps =  main(filepath = vid_file[0])
+    #     frames, needle_maps, nerve_maps, vessel_maps =  main(filepath = vid_file[0])
 
-        min_dist = np.Inf
-        for i in range(len(needle_maps)):
-            curr_dist = calculate_distance(needle_maps[i], nerve_maps[i], vessel_maps[i], (256,256), 'centroid')
-            min_dist = min(curr_dist, min_dist)
+    #     min_dist = np.Inf
+    #     for i in range(len(needle_maps)):
+    #         curr_dist = calculate_distance(needle_maps[i], nerve_maps[i], vessel_maps[i], (256,256), 'centroid')
+    #         min_dist = min(curr_dist, min_dist)
 
-        print(min_dist)
+    #     print(min_dist)
 
-        folders.append(filepath)
-        distances.append(min_dist)
+    #     folders.append(filepath)
+    #     distances.append(min_dist)
 
         
-    df['Folder'] = folders
-    df['Distance'] = distances
+    # df['Folder'] = folders
+    # df['Distance'] = distances
     
-    df.to_csv(dest_csv)
+    # df.to_csv(dest_csv)
 
 
 
