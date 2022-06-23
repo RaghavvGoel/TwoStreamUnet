@@ -140,15 +140,19 @@ class TwoStreamUNet(nn.Module):
         super(TwoStreamUNet, self).__init__()
 
         # ipdb.set_trace()
+        self.temporal_in_channel = temporal_in_channel
+        self.n_classes = n_classes
         # each flow has two channels 
         self.TwoStream = TwoStream(spatial_in_channel, temporal_in_channel, out_channel)
-        self.UNet = UNet(2*out_channel, n_classes)
+        # UNet has twice the channels 
+        self.n_channels = 2*out_channel
+        self.UNet = UNet(self.n_channels, n_classes)
 
     def forward(self, image, flow):
 
         image_flow_combined = self.TwoStream(image, flow)
-        print("two stream output shape", image_flow_combined.shape)
-        ipdb.set_trace()
+        # print("two stream output shape = ", image_flow_combined.shape)
+        # ipdb.set_trace()
         logits = self.UNet(image_flow_combined)
 
         return logits 
