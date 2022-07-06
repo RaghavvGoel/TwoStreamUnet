@@ -26,7 +26,6 @@ class DoubleConv(nn.Module):
         # ipdb.set_trace()
         return self.double_conv(x)
 
-
 class Down(nn.Module):
     """Downscaling with maxpool then double conv"""
 
@@ -39,7 +38,6 @@ class Down(nn.Module):
 
     def forward(self, x):
         return self.maxpool_conv(x)
-
 
 class Up(nn.Module):
     """Upscaling then double conv"""
@@ -128,31 +126,45 @@ class TwoStream(nn.Module):
         image: US images 
         flow: optical flow 
         '''        
-        x1 = self.spatial_conv(image)
-        x2 = self.temporal_conv(flow)
-        x3 = torch.cat([x1, x2], dim=1)
+        x_spatial = self.spatial_conv(image)
+        x_temporal = self.temporal_conv(flow)
+        # x3 = torch.cat([x1, x2], dim=1)
         # ipdb.set_trace()
 
-        return x3
+        return x_spatial, x_temporal
 
 class TwoStreamUNet(nn.Module):
-    def __init__(self,spatial_in_channel, temporal_in_channel, out_channel, n_classes) -> None:
+    def __init__(self,spatial_in_channel, temporal_in_channel, out_channel, n_classes, pure_images_flag=False) -> None:
         super(TwoStreamUNet, self).__init__()
 
         # ipdb.set_trace()
+        self.pure_images_flag = pure_images_flag
         self.temporal_in_channel = temporal_in_channel
         self.n_classes = n_classes
-        # each flow has two channels 
-        self.TwoStream = TwoStream(spatial_in_channel, temporal_in_channel, out_channel)
+        # each flow has two channels x and y direction 
+        if pure_images_flag:
+            self.spatial_conv = DoubleConv(spatial_in_channel, out_channel) 
+            self.n_channels = out_channel 
+        else:
+            self.spatial_conv = DoubleConv(spatial_in_channel, out_channel)  
+            self.temporal_conv = DoubleConv(temporal_in_channel, out_channel)
+            self.n_channels = 2*out_channel
+        # self.TwoStream = TwoStream(spatial_in_channel, temporal_in_channel, out_channel)
         # UNet has twice the channels 
-        self.n_channels = 2*out_channel
+        # self.n_channels = 2*out_channel
         self.UNet = UNet(self.n_channels, n_classes)
 
     def forward(self, image, flow):
 
-        image_flow_combined = self.TwoStream(image, flow)
-        # print("two stream output shape = ", image_flow_combined.shape)
-        # ipdb.set_trace()
-        logits = self.UNet(image_flow_combined)
+        # x_spatial, x_temporal = self.TwoStream(image, flow)
+        if self.pure_images_flag:
+            x_spatial = self.spatial_conv(image)
+            logits = self.UNet(x_spatial)
+            x_temporal = None
+        else:
+            x_spatial = self.spatial_conv(image)
+            x_temporal = self.temporal_conv(flow) 
+            image_flow_combined = torch.cat([x_spatial, x_temporal], dim=1)     
+            logits = self.UNet(image_flow_combined)
 
-        return logits 
+        return logits, x_spatial, x_temporal

@@ -40,6 +40,7 @@ def get_dict_vals(data):
 
 def get_image(i, dataset, PARENT_FOLDER):
     image_path = os.path.join(PARENT_FOLDER, dataset, IMAGE_LOC, 'frame_' + '000{}'.format(i).zfill(6) + '.PNG')
+    # if not os.path.isabs(image_path):
     if not os.path.exists(image_path):
         return None
     img = cv2.imread(image_path)
@@ -48,6 +49,7 @@ def get_image(i, dataset, PARENT_FOLDER):
 
 def get_mask(i, dataset, PARENT_FOLDER):
     mask_path = os.path.join(PARENT_FOLDER, dataset, MASK_LOC, 'frame_' + '000{}'.format(i).zfill(6) + '.png')
+    # if not os.path.isabs(mask_path):
     if not os.path.exists(mask_path):
         return None, None    
     mask = cv2.imread(mask_path) #Image.open(mask_path)
@@ -91,17 +93,19 @@ def get_data_all_dataset(n_flow, LIST_OF_DATASETS, PARENT_FOLDER, saved_data_fil
         # as flow for 1st frame is zero | first frame outisde while 
         img = get_image(i, dataset_name, PARENT_FOLDER)
         mask, mask_resized = get_mask(i, dataset_name, PARENT_FOLDER) #Image.open(mask_path)    
-        mask_needle_arr_resized = find_needle_mask(mask)
-        hsv = np.zeros_like(img)
-        cartesian = np.zeros_like(img)
-        hsv[..., 1] = 255 # scale should be 1, then conversion from hsv to rgb becomes easy
+        # ipdb.set_trace()
+        if mask is not None:
+            mask_needle_arr_resized = find_needle_mask(mask)
+            hsv = np.zeros_like(img)
+            cartesian = np.zeros_like(img)
+            hsv[..., 1] = 255 # scale should be 1, then conversion from hsv to rgb becomes easy
 
-        # initial flow for frame 1 
-        flow_ = torch.zeros_like(img)[:,:, 0:1]
-        flow_new = torch.cat([flow_]*n_flow, dim = -1)
-        
-        # APPEND EVERYTHING TOGETHER
-        if mask_needle_arr_resized is not None:
+            # initial flow for frame 1 
+            flow_ = torch.zeros_like(img)[:,:, 0:1]
+            flow_new = torch.cat([flow_]*n_flow, dim = -1)
+            
+            # # APPEND EVERYTHING TOGETHER
+            # if mask_needle_arr_resized is not None:
             # ipdb.set_trace()
             image_list.append(img[:,:,0:1]) #image_list.append(img)
             flow_list.append(flow_)
@@ -169,11 +173,11 @@ def get_data_all_dataset(n_flow, LIST_OF_DATASETS, PARENT_FOLDER, saved_data_fil
                 img = img_next
         
         # convert lists to tensors 
-        image_list = torch.stack(image_list).permute(0,3,1,2)/255
-        flow_list = torch.stack(flow_list).permute(0,3,1,2)/255 
+        image_list = torch.stack(image_list).permute(0,3,1,2)/255 - 0.5
+        flow_list = torch.stack(flow_list).permute(0,3,1,2)/255 - 0.5
         needle_mask_list = torch.stack(needle_mask_list).permute(0,3,1,2)
         mask_list = torch.stack(mask_list).permute(0,3,1,2)
-        flow_concat_list = torch.stack(flow_concat_list).permute(0,3,1,2)/255
+        flow_concat_list = torch.stack(flow_concat_list).permute(0,3,1,2)/255 - 0.5
 
         # append to global lists
         image_lists.append(image_list)
@@ -201,7 +205,8 @@ def get_data_all_dataset(n_flow, LIST_OF_DATASETS, PARENT_FOLDER, saved_data_fil
 
     print("average ratio of good to bad: ", np.mean(good_pixel_count_lists))
 
-    data_ = {'images':image_lists, 'flows':flow_lists, 'needle_masks':needle_mask_lists, 'masks':mask_lists, 'flow_concats':flow_concat_lists}
+    data_ = {'images':image_lists, 'flows':flow_lists, 'needle_masks':needle_mask_lists, 'masks':mask_lists, 'flow_concats':flow_concat_lists,
+             'ratio_bce_loss':np.mean(good_pixel_count_lists)}
     data_dir = os.path.join('saved_data', saved_data_file)
     if not os.path.exists(data_dir):
         os.makedirs(data_dir)

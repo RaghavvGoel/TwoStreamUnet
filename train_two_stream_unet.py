@@ -1,4 +1,6 @@
 import argparse
+from cmath import e
+from email.policy import default
 from glob import glob
 import logging
 import os
@@ -27,8 +29,11 @@ from torch.utils.data import DataLoader, random_split
 # data_folder_path = 'data/task_positives_11-2022_04_12_18_28_14-segmentation mask 1.1/'
 # dir_img = os.path.join(data_folder_path, 'JPEGImages') #'data/imgs/'
 # dir_mask = os.path.join(data_folder_path, 'SegmentationClass') #'data/masks/'
-PARENT_FOLDER_TRAIN = 'data'
-PARENT_FOLDER_TEST = 'data/test'
+ROOT_FOLDER = '/data/raghavvg/NeedleMasks/' #COMMENT THIS IF IF SYSTEM CHANGES
+
+PARENT_FOLDER_TRAIN = 'data' #os.path.join(ROOT_FOLDER,'data')
+PARENT_FOLDER_TEST = 'data/test' #os.path.join(ROOT_FOLDER, 'data/test')
+
 LIST_OF_DATASETS_TRAIN = ['task_positives_11-2022_04_12_18_28_14-segmentation mask 1.1',
                     'task_positives_153-2022_04_12_18_32_22-segmentation mask 1.1',
                     'task_positives_189-2022_04_12_18_32_54-segmentation mask 1.1',
@@ -82,6 +87,7 @@ def eval_net(net, data, n_classes, criterion, device):
     epoch_loss = 0
     true_mask_list, pred_mask_list, loss_list, loss_v2_list, true_overlayed_imgs_list, pred_overlayed_imgs_list = [], [], [], [], [], []
     pred_v2_overlayed_imgs_list = []
+    spatial_features_list, temporal_features_list = [], []
 
     with torch.no_grad():
         # for i in range(n_eval//batch_size):
@@ -98,19 +104,25 @@ def eval_net(net, data, n_classes, criterion, device):
             true_masks = true_masks.to(device=device, dtype=mask_type)
             flows = flows.to(device=device, dtype=mask_type)
 
-            masks_pred = net(imgs,flows)
+            masks_pred, x_spatial, x_temporal = net(imgs,flows)
 
+            x_spatial = x_spatial.to(device='cpu')
+            spatial_features_list.append(x_spatial)
+            if x_temporal is not None:
+                x_temporal = x_temporal.to(device='cpu') 
+                temporal_features_list.append(x_temporal)
             # loss = criterion(masks_pred, true_masks) # bce with logits already has sigmoid 
             loss = sigmoid_focal_loss(masks_pred, true_masks, device)
             masks_pred = torch.sigmoid(masks_pred)
             masks_pred_ = (masks_pred > 0.5).float() # additional filtering ? 
             # loss_v2 = criterion(masks_pred_, true_masks)
             # epoch_loss += loss.item()
-            imgs = imgs.to(device='cpu') #, dtype=torch.float32        
+            imgs = imgs.to(device='cpu') + 0.5 #, dtype=torch.float32        
             true_masks = true_masks.to(device='cpu') #, dtype=mask_type)
-            flows = flows.to(device='cpu') #, dtype=mask_type)
+            flows = flows.to(device='cpu') + 0.5 #, dtype=mask_type)
             masks_pred = masks_pred.to(device= 'cpu')
             masks_pred_ = masks_pred_.to(device= 'cpu')
+
 
             loss_list.append(loss.item())
             # loss_v2_list.append(loss_v2.item())
@@ -136,6 +148,10 @@ def eval_net(net, data, n_classes, criterion, device):
         # pred_overlayed_imgs_list = torch.concat(pred_overlayed_imgs_list, dim=0)
         pred_v2_overlayed_imgs_list = torch.concat(pred_v2_overlayed_imgs_list, dim=0)
 
+        spatial_features_list = torch.concat(spatial_features_list, dim = 0)
+        if len(temporal_features_list) != 0:
+            temporal_features_list = torch.concat(temporal_features_list, dim = 0)
+
         # print("loss: ", epoch_loss, " loss_v2: " , epoch_loss_v2)
         # print("shapes: ", pred_mask_list.shape)
 
@@ -145,7 +161,8 @@ def eval_net(net, data, n_classes, criterion, device):
         
     # written or write random predictions and ground truths 
     # will help in debug
-    return epoch_loss, true_mask_list, pred_mask_list, true_overlayed_imgs_list, pred_v2_overlayed_imgs_list, images
+    return epoch_loss, true_mask_list, pred_mask_list, true_overlayed_imgs_list, pred_v2_overlayed_imgs_list, images \
+            , spatial_features_list, temporal_features_list
 
 def train_net(net,
               device,
@@ -160,7 +177,8 @@ def train_net(net,
               task = 'train',
               saved_data_file = None, 
               weight_file = None,
-              iter = 0):
+              iter = 0,
+              pure_image_flag = False):
 
     global dir_checkpoint
     # use_saved_data = True
@@ -217,9 +235,10 @@ def train_net(net,
     if n_classes > 1:
         criterion = nn.CrossEntropyLoss()
     else:
-        criterion = nn.BCEWithLogitsLoss(pos_weight=torch.tensor(150)) #pos_weight=150
+        # criterion = nn.BCEWithLogitsLoss(pos_weight=torch.tensor(100)) #pos_weight=150
+        criterion = nn.BCEWithLogitsLoss() #pos_weight=150
 
-    rand_inds = random.sample(range(0, n_val), 20) # sampling 10 random numbers for plotting 
+    rand_inds = random.sample(range(0, n_val), 5) # sampling 10 random numbers for plotting 
     ################################ VALIDATION ################################################ 
     ################################ VALIDATION ################################################ 
     ################################ VALIDATION ################################################ 
@@ -277,16 +296,16 @@ def train_net(net,
                 true_masks = needle_masks_train[ind_] #batch['mask']
                 flows = flow_concats_train[ind_]
 
-                imgs = imgs.to(device=device, dtype=torch.float32)
+                imgs = imgs.to(device=device, dtype=torch.float32) + 0.5
                 mask_type = torch.float32 if n_classes == 1 else torch.long
                 true_masks = true_masks.to(device=device, dtype=mask_type)
-                flows = flows.to(device=device, dtype=torch.float32)
+                flows = flows.to(device=device, dtype=torch.float32) + 0.5
 
                 # print("check why no issue in train of different dtype of mask_pred and true_mask")
                 # ipdb.set_trace()
-                masks_pred = net(imgs,flows)
-                # loss = criterion(masks_pred, true_masks)
-                loss = sigmoid_focal_loss(masks_pred, true_masks, device) 
+                masks_pred, x_spatial, x_temporal = net(imgs,flows)
+                loss = criterion(masks_pred, true_masks)
+                # loss = sigmoid_focal_loss(masks_pred, true_masks, device) 
                 # dice_loss = find_dice_loss(masks_pred, true_masks) # most prob wrong implementation 
                 # dice_loss = torch.sum(masks_pred*true_masks, dim=0)/(torch.sum(masks_pred, dim=0) + torch.sum(true_masks, dim=0))
                 # dice_loss = torch.mean(dice_loss)
@@ -312,7 +331,8 @@ def train_net(net,
                         writer.add_histogram('grads/' + tag, value.grad.data.cpu().numpy(), global_step)
                     
                     net.eval()
-                    val_score, true_masks_test, masks_pred_test, true_overlayed_imgs, pred_overlayed_imgs, imgs_test = eval_net(net, test_data, n_classes, criterion, device)
+                    val_score, true_masks_test, masks_pred_test, true_overlayed_imgs, pred_overlayed_imgs, imgs_test, spatial_features_test, temporal_features_test \
+                                    = eval_net(net, test_data, n_classes, criterion, device)
                     if val_score < min_val_score:
                         min_val_score = val_score
                         torch.save(net.state_dict(), os.path.join(dir_checkpoint, 'CP_best.pth'))
@@ -322,12 +342,12 @@ def train_net(net,
                     test_iou = iou(masks_pred_test, true_masks_test)
                     writer.add_scalar('IOU/test', test_iou, global_step)
 
-                    if net.n_classes > 1:
-                        logging.info('Validation cross entropy: {}'.format(val_score))
-                        writer.add_scalar('Loss/test', val_score, global_step)
-                    else:
-                        logging.info('Validation Loss: {}'.format(val_score))
-                        writer.add_scalar('Loss/test', val_score, global_step)
+                    # if net.n_classes > 1:
+                    #     logging.info('Validation cross entropy: {}'.format(val_score))
+                    #     writer.add_scalar('Loss/test', val_score, global_step)
+                    # else:
+                    logging.info('Validation Loss: {}'.format(val_score))
+                    writer.add_scalar('Loss/test', val_score, global_step)
 
                     # ipdb.set_trace()
                     writer.add_images('train/images', imgs, global_step)
@@ -338,6 +358,13 @@ def train_net(net,
                         masks_pred = torch.sigmoid(masks_pred)
                         masks_pred_ = (masks_pred > 0.5).float()
                         # writer.add_images('train/mask_pred_sigmoid', masks_pred > 0.5, global_step)
+                        # ipdb.set_trace()
+                        x_spatial = x_spatial.unsqueeze(2)
+                        x_spatial_shape = x_spatial.shape
+                        writer.add_images('train_features/spatial_features', x_spatial.reshape(-1,1,x_spatial_shape[-2],x_spatial_shape[-1]), global_step)
+                        if x_temporal is not None:
+                            x_temporal = x_temporal.unsqueeze(2)
+                            writer.add_images('train_features/temporal_features', x_temporal.reshape(-1,1,x_spatial_shape[-2],x_spatial_shape[-1]), global_step)
                         writer.add_images('train/mask_pred_sigmoid', masks_pred_, global_step)
                         writer.add_images('train/mask_pred', masks_pred, global_step)
                         writer.add_images('train/true_overlayed' ,torch.concat([imgs, 0.5*(imgs + true_masks), imgs], dim = 1), global_step)
@@ -353,12 +380,17 @@ def train_net(net,
                         true_overlayed_imgs_ = true_overlayed_imgs[rand_inds]
                         pred_overlayed_imgs_ = pred_overlayed_imgs[rand_inds]
                         imgs_test_ = imgs_test[rand_inds]
+                        spatial_features_test_ = spatial_features_test[rand_inds].unsqueeze(2)
                         writer.add_images('test/images', imgs_test_, global_step)
                         writer.add_images('test/mask_true', true_masks_test_, global_step)
                         writer.add_images('test/mask_pred', masks_pred_test_, global_step)
                         writer.add_images('test/mask_pred_sigmoid', masks_pred_test_ > 0.5, global_step)
                         writer.add_images('test/true_overlayed', true_overlayed_imgs_, global_step)
                         writer.add_images('test/pred_overlayed', pred_overlayed_imgs_, global_step)
+                        writer.add_images('test_features/spatial_features', spatial_features_test_.reshape(-1,1,x_spatial_shape[-2],x_spatial_shape[-1]), global_step)
+                        if len(temporal_features_test) > 0:
+                            temporal_features_test_ = temporal_features_test[rand_inds].unsqueeze(2)
+                            writer.add_images('test_features/temporal_features', temporal_features_test_.reshape(-1,1,x_spatial_shape[-2],x_spatial_shape[-1]), global_step)
         if save_cp:
             try:
                 # os.mkdir(dir_checkpoint)
@@ -376,7 +408,7 @@ def train_net(net,
     writer.close()
 
 
-def sigmoid_focal_loss(inputs, targets, device, alpha = 0.25, gamma = 2, reduction = "none"):
+def sigmoid_focal_loss(inputs, targets, device, alpha = 0.75, gamma = 2, reduction = "none"):
     '''
     reference link: https://pytorch.org/vision/0.12/_modules/torchvision/ops/focal_loss.html
     '''
@@ -421,6 +453,8 @@ def get_args():
     parser.add_argument('--iter', type=str, default='0')
 
     parser.add_argument('--val_weights', type=str, default='0')
+
+    parser.add_argument('--pure_images', action='store_true', default=False)
     # parser.add_argument('--log', action='store_true', default=False)
 
     return parser.parse_args()
@@ -440,8 +474,8 @@ if __name__ == '__main__':
     #   - For N > 2 classes, use n_classes=N
     # net = UNet(n_channels=3, n_classes=1, bilinear=True)
     ## TO CHECK: EFFECT OF BILINEAR AND N_CLASS = 1 ######################################## | ABLATE on increasing temporal channels 
-    net = TwoStreamUNet(spatial_in_channel=1, temporal_in_channel=1, out_channel=16, n_classes=1)
-    
+    net = TwoStreamUNet(spatial_in_channel=2, temporal_in_channel=1, out_channel=16, n_classes=1, pure_images_flag=args.pure_images)
+
     # logging.info(f'Network:\n'
     #              f'\t{net.out_channel} input channels\n'
     #              f'\t{net.n_classes} output channels (classes)\n'
@@ -472,7 +506,8 @@ if __name__ == '__main__':
                 task = args.task,
                 saved_data_file = args.saved_data_file,
                 weight_file = args.val_weights,
-                iter = args.iter)
+                iter = args.iter,
+                pure_image_flag = args.pure_images)
     except KeyboardInterrupt:
         # torch.save(net.state_dict(), 'INTERRUPTED.pth')
         torch.save(net.state_dict(), os.path.join(dir_checkpoint,'INTERRUPTED.pth'))
