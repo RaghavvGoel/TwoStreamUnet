@@ -173,11 +173,11 @@ def get_data_all_dataset(n_flow, LIST_OF_DATASETS, PARENT_FOLDER, saved_data_fil
                 img = img_next
         
         # convert lists to tensors 
-        image_list = torch.stack(image_list).permute(0,3,1,2)/255 - 0.5
-        flow_list = torch.stack(flow_list).permute(0,3,1,2)/255 - 0.5
+        image_list = torch.stack(image_list).permute(0,3,1,2)/255 #- 0.5
+        flow_list = torch.stack(flow_list).permute(0,3,1,2)/255 #- 0.5
         needle_mask_list = torch.stack(needle_mask_list).permute(0,3,1,2)
         mask_list = torch.stack(mask_list).permute(0,3,1,2)
-        flow_concat_list = torch.stack(flow_concat_list).permute(0,3,1,2)/255 - 0.5
+        flow_concat_list = torch.stack(flow_concat_list).permute(0,3,1,2)/255 #- 0.5
 
         # append to global lists
         image_lists.append(image_list)

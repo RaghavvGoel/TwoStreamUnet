@@ -1,0 +1,12 @@
+# folders 
+
+__pycache__
+checkpoints
+data
+images
+runs
+saved_data
+
+# files 
+*.gif
+*.png

@@ -296,10 +296,10 @@ def train_net(net,
                 true_masks = needle_masks_train[ind_] #batch['mask']
                 flows = flow_concats_train[ind_]
 
-                imgs = imgs.to(device=device, dtype=torch.float32) + 0.5
+                imgs = imgs.to(device=device, dtype=torch.float32) #+ 0.5
                 mask_type = torch.float32 if n_classes == 1 else torch.long
                 true_masks = true_masks.to(device=device, dtype=mask_type)
-                flows = flows.to(device=device, dtype=torch.float32) + 0.5
+                flows = flows.to(device=device, dtype=torch.float32) #+ 0.5
 
                 # print("check why no issue in train of different dtype of mask_pred and true_mask")
                 # ipdb.set_trace()
@@ -474,7 +474,7 @@ if __name__ == '__main__':
     #   - For N > 2 classes, use n_classes=N
     # net = UNet(n_channels=3, n_classes=1, bilinear=True)
     ## TO CHECK: EFFECT OF BILINEAR AND N_CLASS = 1 ######################################## | ABLATE on increasing temporal channels 
-    net = TwoStreamUNet(spatial_in_channel=2, temporal_in_channel=1, out_channel=16, n_classes=1, pure_images_flag=args.pure_images)
+    net = TwoStreamUNet(spatial_in_channel=1, temporal_in_channel=1, out_channel=16, n_classes=1, pure_images_flag=args.pure_images)
 
     # logging.info(f'Network:\n'
     #              f'\t{net.out_channel} input channels\n'
