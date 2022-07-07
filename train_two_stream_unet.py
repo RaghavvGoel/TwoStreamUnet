@@ -23,7 +23,7 @@ from rishabh import iou
 torch.manual_seed(10)
 # from torch.utils.tensorboard import SummaryWriter
 # from utils.dataset import BasicDataset # write your own 
-from utils_two_stream_unet import get_data, get_data_all_dataset, get_dict_vals
+from utils_two_stream_unet import get_data, get_data_all_dataset, get_dict_vals, get_data_dict
 from torch.utils.data import DataLoader, random_split
 
 # data_folder_path = 'data/task_positives_11-2022_04_12_18_28_14-segmentation mask 1.1/'
@@ -77,32 +77,37 @@ if not os.path.exists(dir_checkpoint):
 
     # ipdb.set_trace()
 
-def eval_net(net, data, n_classes, criterion, device):
+def eval_net(net, test_data, n_classes, criterion, device):
     '''
     pass data as dictionart and extract here 
     '''
-    images, flows, needle_masks, masks, flow_concats  = get_dict_vals(data)
-    n_eval = len(images)
+    # images, flows, needle_masks, masks, flow_concats  = get_dict_vals(data)
+    n_eval = len(test_data)
     batch_size = 10 #len(images)//4
     epoch_loss = 0
     true_mask_list, pred_mask_list, loss_list, loss_v2_list, true_overlayed_imgs_list, pred_overlayed_imgs_list = [], [], [], [], [], []
     pred_v2_overlayed_imgs_list = []
     spatial_features_list, temporal_features_list = [], []
+    images_list = []
 
     with torch.no_grad():
         # for i in range(n_eval//batch_size):
         i = 0
-        while i <= (n_eval//batch_size):
+        # while i <= (n_eval//batch_size):
+        for i, data in enumerate(test_data):
             i += 1
-            ind_ = range((i-1)*batch_size,i*batch_size) if i*batch_size < n_eval else range((i-1)*batch_size,n_eval)
-            imgs = images[ind_] #batch['image']
-            true_masks = needle_masks[ind_] #batch['mask']
-            flows = flow_concats[ind_]
+            # ind_ = range((i-1)*batch_size,i*batch_size) if i*batch_size < n_eval else range((i-1)*batch_size,n_eval)
+            # imgs = images[ind_] #batch['image']
+            # true_masks = needle_masks[ind_] #batch['mask']
+            # flows = flow_concats[ind_]
+            imgs = data['images'] #images_train[ind_] #batch['image']
+            true_masks = data['needle_masks'] #needle_masks_train[ind_] #batch['mask']
+            flows = data['flow_concats'] #flow_concats_train[ind_]
 
-            imgs = imgs.to(device=device, dtype=torch.float32)
+            imgs = imgs.to(device=device, dtype=torch.float32)/255
             mask_type = torch.float32 if n_classes == 1 else torch.long
             true_masks = true_masks.to(device=device, dtype=mask_type)
-            flows = flows.to(device=device, dtype=mask_type)
+            flows = flows.to(device=device, dtype=mask_type)/255
 
             masks_pred, x_spatial, x_temporal = net(imgs,flows)
 
@@ -117,13 +122,13 @@ def eval_net(net, data, n_classes, criterion, device):
             masks_pred_ = (masks_pred > 0.5).float() # additional filtering ? 
             # loss_v2 = criterion(masks_pred_, true_masks)
             # epoch_loss += loss.item()
-            imgs = imgs.to(device='cpu') + 0.5 #, dtype=torch.float32        
+            imgs = imgs.to(device='cpu') #+ 0.5 #, dtype=torch.float32        
             true_masks = true_masks.to(device='cpu') #, dtype=mask_type)
-            flows = flows.to(device='cpu') + 0.5 #, dtype=mask_type)
+            flows = flows.to(device='cpu') #+ 0.5 #, dtype=mask_type)
             masks_pred = masks_pred.to(device= 'cpu')
             masks_pred_ = masks_pred_.to(device= 'cpu')
 
-
+            images_list.append(imgs)
             loss_list.append(loss.item())
             # loss_v2_list.append(loss_v2.item())
             true_mask_list.append(true_masks)
@@ -142,6 +147,7 @@ def eval_net(net, data, n_classes, criterion, device):
         # ipdb.set_trace()
         epoch_loss = np.mean(loss_list)
         # epoch_loss_v2 = np.mean(loss_v2_list)
+        images_list = torch.concat(images_list, dim=0)
         true_mask_list = torch.concat(true_mask_list, dim=0)
         pred_mask_list = torch.concat(pred_mask_list, dim=0)
         true_overlayed_imgs_list = torch.concat(true_overlayed_imgs_list, dim=0)
@@ -161,7 +167,7 @@ def eval_net(net, data, n_classes, criterion, device):
         
     # written or write random predictions and ground truths 
     # will help in debug
-    return epoch_loss, true_mask_list, pred_mask_list, true_overlayed_imgs_list, pred_v2_overlayed_imgs_list, images \
+    return epoch_loss, true_mask_list, pred_mask_list, true_overlayed_imgs_list, pred_v2_overlayed_imgs_list, images_list \
             , spatial_features_list, temporal_features_list
 
 def train_net(net,
@@ -190,26 +196,35 @@ def train_net(net,
     
     if not use_saved_data:
         # images_tensor, flows_tensor, needle_masks_tensor, masks_tensor, flow_concats_tensor = get_data(net.temporal_in_channel)
-        train_data =  get_data_all_dataset(net.temporal_in_channel, LIST_OF_DATASETS_TRAIN, PARENT_FOLDER_TRAIN, iter,'train')
-        test_data =  get_data_all_dataset(net.temporal_in_channel, LIST_OF_DATASETS_TEST, PARENT_FOLDER_TEST, iter, 'test')
+        train_data = get_data_dict(net.temporal_in_channel, LIST_OF_DATASETS_TRAIN, PARENT_FOLDER_TRAIN, saved_data_file,'train')
+        test_data = get_data_dict(net.temporal_in_channel, LIST_OF_DATASETS_TEST, PARENT_FOLDER_TEST, saved_data_file,'test')
+        # train_data =  get_data_all_dataset(net.temporal_in_channel, LIST_OF_DATASETS_TRAIN, PARENT_FOLDER_TRAIN, saved_data_file,'train')
+        # test_data =  get_data_all_dataset(net.temporal_in_channel, LIST_OF_DATASETS_TEST, PARENT_FOLDER_TEST, saved_data_file, 'test')
     else:
         train_data = torch.load(os.path.join('saved_data', saved_data_file, 'train.pt')) #torch.load('saved_data/3/train.pt')
         test_data = torch.load(os.path.join('saved_data', saved_data_file, 'test.pt')) #torch.load('saved_data/3/test.pt')
 
-    images_test, flows_test, needle_masks_test, masks_test, flow_concats_test  = get_dict_vals(test_data)  
-    images_train, flows_train, needle_masks_train, masks_train, flow_concats_train  = get_dict_vals(train_data)    
+    # wrap data in dataloader 
+    ipdb.set_trace()
+    train_data = DataLoader(train_data, batch_size=batch_size, shuffle=True)
+    test_data = DataLoader(test_data, batch_size=batch_size, shuffle=True)
+
+    # images_test, flows_test, needle_masks_test, masks_test, flow_concats_test  = get_dict_vals(test_data)  
+    # images_train, flows_train, needle_masks_train, masks_train, flow_concats_train  = get_dict_vals(train_data)    
         
-    n_val = len(images_test) #int(len(dataset) * val_percent)
-    n_train = len(images_train) #- n_val
+    n_val = len(train_data) #int(len(dataset) * val_percent)
+    n_train = len(test_data) #- n_val
     # train, val = random_split(dataset, [n_train, n_val])
     # train_loader = DataLoader(train, batch_size=batch_size, shuffle=True, num_workers=8, pin_memory=True)
     # val_loader = DataLoader(val, batch_size=batch_size, shuffle=False, num_workers=8, pin_memory=True, drop_last=True)
     """
     GENERATE DATA W/O WRAPPING IN DATALOADER, CAN'T USE SHUFFLE WITH FLOW or shuffle in batches
-    for one image, flow has 3 previous frames, can create Bx5xHxW for flow and Bx1XHxW for US images
+    for one image, flow has 3 previous frames, can create Bx5xHxW for flow and Bx1XHxW for US images 
+    (make a dictionary and wrap dictionay in data loader)
     """
     # ipdb.set_trace()
     # writer = SummaryWriter(comment='LR_{}_BS_{}_PATIENCE_{}'.format(lr, batch_size, 20))
+    """PARAMS for LOGGING"""
     patience = 5
     writer = SummaryWriter(comment='LR_{}_BS_{}_PATIENCE_{}_train_iter_{}'.format(lr, batch_size, patience, iter))
     global_step = 0
@@ -226,11 +241,12 @@ def train_net(net,
         Images scaling:  {img_scale}
     ''')
 
-    # optimizer = optim.RMSprop(net.parameters(), lr=lr, weight_decay=1e-8, momentum=0.9)
-    optimizer = optim.Adam(net.parameters(), lr=lr, weight_decay=1e-8)
+    optimizer = optim.RMSprop(net.parameters(), lr=lr, weight_decay=1e-8, momentum=0.9)
+    # optimizer = optim.Adam(net.parameters(), lr=lr, weight_decay=1e-8)
     # also try cosine_annealing
     # scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min' if net.n_classes > 1 else 'max', patience=2)
-    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min', patience=patience, factor=0.9)
+    # scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min', patience=patience, factor=0.9)
+    scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=1000)
     
     if n_classes > 1:
         criterion = nn.CrossEntropyLoss()
@@ -289,27 +305,25 @@ def train_net(net,
         # print("check why a lot of GPU is being used")
         with tqdm(total=n_train, desc=f'Epoch {epoch + 1}/{epochs}', unit='img') as pbar:
             # for batch in train_loader:
-            for i in range(n_train//batch_size):
+            # for i in range(n_train//batch_size):
+            for i,data in enumerate(train_data):
                 # ipdb.set_trace()
-                ind_ = range((i)*batch_size,(i+1)*batch_size)
-                imgs = images_train[ind_] #batch['image']
-                true_masks = needle_masks_train[ind_] #batch['mask']
-                flows = flow_concats_train[ind_]
+                # ind_ = range((i)*batch_size,(i+1)*batch_size)
+                imgs = data['images'] #images_train[ind_] #batch['image']
+                true_masks = data['needle_masks'] #needle_masks_train[ind_] #batch['mask']
+                flows = data['flow_concats'] #flow_concats_train[ind_]
 
-                imgs = imgs.to(device=device, dtype=torch.float32) #+ 0.5
+                imgs = imgs.to(device=device, dtype=torch.float32)/255 #+ 0.5
                 mask_type = torch.float32 if n_classes == 1 else torch.long
                 true_masks = true_masks.to(device=device, dtype=mask_type)
-                flows = flows.to(device=device, dtype=torch.float32) #+ 0.5
+                flows = flows.to(device=device, dtype=torch.float32)/255 #+ 0.5
 
                 # print("check why no issue in train of different dtype of mask_pred and true_mask")
                 # ipdb.set_trace()
                 masks_pred, x_spatial, x_temporal = net(imgs,flows)
                 loss = criterion(masks_pred, true_masks)
-                # loss = sigmoid_focal_loss(masks_pred, true_masks, device) 
-                # dice_loss = find_dice_loss(masks_pred, true_masks) # most prob wrong implementation 
-                # dice_loss = torch.sum(masks_pred*true_masks, dim=0)/(torch.sum(masks_pred, dim=0) + torch.sum(true_masks, dim=0))
-                # dice_loss = torch.mean(dice_loss)
-                # print("dice_loss = ", dice_loss)
+                # loss = sigmoid_focal_loss(masks_pred, true_masks, device)
+                
                 epoch_loss += loss.item()
                 writer.add_scalar('Loss/train', loss.item(), global_step)
                 # writer.add_scalar('Loss/train_dice_loss', dice_loss.item(), global_step)
@@ -337,7 +351,8 @@ def train_net(net,
                         min_val_score = val_score
                         torch.save(net.state_dict(), os.path.join(dir_checkpoint, 'CP_best.pth'))
                     net.train()
-                    scheduler.step(val_score)
+                    # scheduler.step(val_score)
+                    scheduler.step()
                     writer.add_scalar('learning_rate', optimizer.param_groups[0]['lr'], global_step)
                     test_iou = iou(masks_pred_test, true_masks_test)
                     writer.add_scalar('IOU/test', test_iou, global_step)
@@ -455,6 +470,8 @@ def get_args():
     parser.add_argument('--val_weights', type=str, default='0')
 
     parser.add_argument('--pure_images', action='store_true', default=False)
+
+    parser.add_argument('--n_flow', type=int, default=1)
     # parser.add_argument('--log', action='store_true', default=False)
 
     return parser.parse_args()

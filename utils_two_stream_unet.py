@@ -77,6 +77,112 @@ def find_needle_mask(mask):
 
     return mask_needle_arr
 
+def get_data_dict(n_flow, LIST_OF_DATASETS, PARENT_FOLDER, saved_data_file, type='train'):
+    
+    # initialise list to append stacked data from each dataset
+    # image_lists, flow_lists, needle_mask_lists, mask_lists, flow_concat_lists = [], [], [], [], []
+    all_data_dict = []
+    good_pixel_count_lists = []
+    for j, dataset_name in enumerate(LIST_OF_DATASETS):
+        print("dataset # " , j)
+        i = 1
+        image_list, flow_list, needle_mask_list, mask_list, flow_concat_list = [], [], [], [], []
+        good_pixel_count_list = []
+        image_path = os.path.join(PARENT_FOLDER, dataset_name, IMAGE_LOC, 'frame_' + '000{}'.format(i).zfill(6) + '.PNG')
+        # mask_path = os.path.join(PARENT_FOLDER, LIST_OF_DATASETS[0], MASK_LOC, 'frame_' + '000{}'.format(i).zfill(6) + '.png')
+        
+        # as flow for 1st frame is zero | first frame outisde while 
+        img = get_image(i, dataset_name, PARENT_FOLDER)
+        mask, mask_resized = get_mask(i, dataset_name, PARENT_FOLDER) #Image.open(mask_path)    
+        # ipdb.set_trace()
+        if mask is not None:
+            mask_needle_arr_resized = find_needle_mask(mask)
+            hsv = np.zeros_like(img)
+            cartesian = np.zeros_like(img)
+            hsv[..., 1] = 255 # scale should be 1, then conversion from hsv to rgb becomes easy
+
+            # initial flow for frame 1 
+            flow_ = torch.zeros_like(img)[:,:, 0:1]
+            flow_new = torch.cat([flow_]*n_flow, dim = -1)
+            flow_xy = torch.zeros_like(img)[:,:, 0:2]
+            flow_list.append(flow_)
+            # ipdb.set_trace()
+     
+            # all_data_dict.append({'images':img[:,:,0:1], 'flows':flow_, 'needle_masks':torch.from_numpy(mask_needle_arr_resized).unsqueeze(-1), 
+            # 'masks':torch.from_numpy(mask_resized), 'flow_concats':flow_new}) #'flow_xy':flow_xy 
+            all_data_dict.append({'images':img[:,:,0:1].permute(2,0,1), 
+                                'flows':flow_.permute(2,0,1), 
+                                'needle_masks':torch.from_numpy(mask_needle_arr_resized).unsqueeze(-1).permute(2,0,1), 
+                                'masks':torch.from_numpy(mask_resized).permute(2,0,1), 
+                                'flow_concats':flow_new.permute(2,0,1)})             
+            # ipdb.set_trace()
+            # finding number of good pixels
+            _ , count_ = np.unique(mask_needle_arr_resized, return_counts=True) 
+            if count_[1] != 0:
+                good_pixel_count_list.append(count_[0]/count_[1])
+
+        img_H = img.shape[0]
+        img_W = img.shape[1]
+
+        while os.path.exists(image_path):
+            
+            # print("i = " , i)
+            i = i + 1            
+            img_next = get_image(i, dataset_name, PARENT_FOLDER) #Image.open(image_path)        
+            if img_next is None:
+                print("done")
+                break
+            mask, mask_resized = get_mask(i, dataset_name, PARENT_FOLDER) #Image.open(mask_path)
+            
+            # if mask is none then don't append images
+            if mask is not None:                
+                mask_needle_arr_resized = find_needle_mask(mask)
+                # if needle mask is none don't append
+                if mask_needle_arr_resized is not None:
+                    image_list.append(img_next[:,:,0:1])          
+                    # ipdb.set_trace()
+                    _ , count_ = np.unique(mask_needle_arr_resized, return_counts=True) 
+                    if count_[1] != 0:
+                        good_pixel_count_list.append(count_[0]/count_[1])                        
+                    # compute optical flow and stack in groups of n
+                    prvs = np.array(img)[:,:,0]
+                    next = np.array(img_next)[:,:,0]
+
+                    flow = cv2.calcOpticalFlowFarneback(prvs, next, None, 0.5, levels=3, winsize=15, iterations=3, poly_n=5, poly_sigma=1.2, flags=0)    
+                    mean_flow = np.array([np.mean(flow[..., 0]), np.mean(flow[..., 1])])
+                    cartesian[..., [0,2]] = cv2.normalize(flow-mean_flow,None, 0, 255, cv2.NORM_MINMAX)
+                    cartesian_bgr = cv2.cvtColor(cartesian, cv2.COLOR_HSV2BGR)
+                    
+                    flow_list.append(torch.from_numpy(cartesian_bgr)[:,:, 0:1])
+                    # concatenate m flow frames along channel dim
+                    if len(flow_list) >= n_flow:
+                        tmp = torch.cat(flow_list[-n_flow:], dim=-1)              
+                    else:
+                        tt1 = torch.cat([torch.zeros(img_H, img_W, 1)]*(n_flow-len(flow_list)), dim=-1)
+                        tt2 = torch.cat(flow_list, dim=-1)
+                        tmp = torch.cat([tt2,tt1], dim=-1)
+                    # flow_concat_list.append(tmp)
+
+                    all_data_dict.append({'images':img_next[:,:,0:1].permute(2,0,1), 
+                                        'flows':torch.from_numpy(cartesian_bgr)[:,:, 0:1].permute(2,0,1), 
+                                        'needle_masks':torch.from_numpy(mask_needle_arr_resized).unsqueeze(-1).permute(2,0,1), 
+                                        'masks':torch.from_numpy(mask_resized).permute(2,0,1), 
+                                        'flow_concats':tmp.permute(2,0,1)}) 
+
+                # update previous image
+                img = img_next
+
+    print("average ratio of good to bad: ", np.mean(good_pixel_count_lists))
+
+    data_dir = os.path.join('saved_data', saved_data_file)
+    if not os.path.exists(data_dir):
+        os.makedirs(data_dir)
+
+    torch.save(all_data_dict, os.path.join(data_dir, type+'.pt'))
+    ipdb.set_trace()
+
+    return all_data_dict 
+
 def get_data_all_dataset(n_flow, LIST_OF_DATASETS, PARENT_FOLDER, saved_data_file, type='train'):
     
     # initialise list to append stacked data from each dataset
