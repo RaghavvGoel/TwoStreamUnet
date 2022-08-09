@@ -1,5 +1,4 @@
-#!/usr/bin/env python
-
+from configparser import Interpolation
 import getopt
 import math
 import numpy
@@ -8,9 +7,33 @@ import PIL.Image
 import sys
 import torch
 import ipdb
+import os
+import cv2 
+import numpy as np
+# from utils_two_stream_unet import get_image
+
+IMAGE_LOC  = 'JPEGImages'
+MASK_LOC = 'SegmentationClass'
+
+PARENT_FOLDER_TRAIN = 'data' #os.path.join(ROOT_FOLDER,'data')
+PARENT_FOLDER_TEST = 'data/test' #os.path.join(ROOT_FOLDER, 'data/test')
+
+LIST_OF_DATASETS_TRAIN = ['task_positives_11-2022_04_12_18_28_14-segmentation mask 1.1']
+# LIST_OF_DATASETS_TRAIN = ['task_positives_11-2022_04_12_18_28_14-segmentation mask 1.1',
+#                     'task_positives_153-2022_04_12_18_32_22-segmentation mask 1.1',
+#                     'task_positives_189-2022_04_12_18_32_54-segmentation mask 1.1',
+#                     'task_positives_193-2022_04_18_19_26_03-segmentation mask 1.1',
+#                     'task_positives_67-2022_04_18_19_11_58-segmentation mask 1.1',
+#                     'task_positives_222-2022_04_19_22_31_15-segmentation mask 1.1',
+#                     'task_positives_230-2022_04_12_18_39_39-segmentation mask 1.1'
+#                     ]
+
+LIST_OF_DATASETS_TEST = ['task_positives_205-2022_04_21_17_04_12-segmentation mask 1.1',
+                    ]
+
 
 try:
-    from .correlation_liteflownet import correlation # the custom cost volume layer
+    from correlation_liteflownet import correlation # the custom cost volume layer
 except:
     sys.path.insert(0, './correlation_liteflownet'); import correlation # you should consider upgrading python
 # end
@@ -111,8 +134,8 @@ class Network(torch.nn.Module):
                 tenFou = self.netFou(tenThr)
                 tenFiv = self.netFiv(tenFou)
                 tenSix = self.netSix(tenFiv)
+                return [ tenOne, tenTwo, tenThr, tenFou, tenFiv, tenSix ]             
 
-                return [ tenOne, tenTwo, tenThr, tenFou, tenFiv, tenSix ]
             # end
         # end
 
@@ -314,23 +337,78 @@ class Network(torch.nn.Module):
         tenOne = [ tenOne ]
         tenTwo = [ tenTwo ]
 
+        # creating list of OG images with different sizes based of feature size
         for intLevel in [ 1, 2, 3, 4, 5 ]:
             tenOne.append(torch.nn.functional.interpolate(input=tenOne[-1], size=(tenFeaturesOne[intLevel].shape[2], tenFeaturesOne[intLevel].shape[3]), mode='bilinear', align_corners=False))
-            tenTwo.append(torch.nn.functional.interpolate(input=tenTwo[-1], size=(tenFeaturesTwo[intLevel].shape[2], tenFeaturesTwo[intLevel].shape[3]), mode='bilinear', align_corners=False))
-        # end
+            tenTwo.append(torch.nn.functional.interpolate(input=tenTwo[-1], size=(tenFeaturesTwo[intLevel].shape[2], tenFeaturesTwo[intLevel].shape[3]), mode='bilinear', align_corners=False))    
 
         tenFlow = None
 
         for intLevel in [ -1, -2, -3, -4, -5 ]:
+            print("intLevel = " , intLevel)
             tenFlow = self.netMatching[intLevel](tenOne[intLevel], tenTwo[intLevel], tenFeaturesOne[intLevel], tenFeaturesTwo[intLevel], tenFlow)
+            print("after Matching tenFlow shape", tenFlow.shape)
             tenFlow = self.netSubpixel[intLevel](tenOne[intLevel], tenTwo[intLevel], tenFeaturesOne[intLevel], tenFeaturesTwo[intLevel], tenFlow)
+            print("after Subpixel tenFlow shape", tenFlow.shape)
             tenFlow = self.netRegularization[intLevel](tenOne[intLevel], tenTwo[intLevel], tenFeaturesOne[intLevel], tenFeaturesTwo[intLevel], tenFlow)
-        # end
+            print("after regularization tenFlow shape", tenFlow.shape)
+        
+        ipdb.set_trace()
 
         return tenFlow * 20.0
+    
+    def forward_v2(self, tenOne, tenTwo):
+        
+        tenOne[:, 0, :, :] = tenOne[:, 0, :, :] #- 0.411618
+        tenOne[:, 1, :, :] = tenOne[:, 1, :, :] #- 0.434631
+        tenOne[:, 2, :, :] = tenOne[:, 2, :, :] #- 0.454253
+
+        tenTwo[:, 0, :, :] = tenTwo[:, 0, :, :] #- 0.410782
+        tenTwo[:, 1, :, :] = tenTwo[:, 1, :, :] #- 0.433645
+        tenTwo[:, 2, :, :] = tenTwo[:, 2, :, :] #- 0.452793
+
+        tenFeaturesOne = self.netFeatures(tenOne)
+        tenFeaturesTwo = self.netFeatures(tenTwo)
+        print("tenFeaturesOne len: ", len(tenFeaturesOne))
+        print("tenFeaturesOne_0 shape: ", tenFeaturesOne[0].shape)
+        print("tenFeaturesOne_1 shape: ", tenFeaturesOne[1].shape)
+        print("tenFeaturesOne_2 shape: ", tenFeaturesOne[2].shape)
+        print("tenFeaturesOne_3 shape: ", tenFeaturesOne[3].shape)
+        print("tenFeaturesOne_4 shape: ", tenFeaturesOne[4].shape)
+        print("tenFeaturesOne_5 shape: ", tenFeaturesOne[5].shape)
+        tenOne = [ tenOne ]
+        tenTwo = [ tenTwo ]
+
+        # creating list of OG images with different sizes based of feature size
+        for intLevel in [1, 2, 3, 4, 5 ]:
+            tenOne.append(torch.nn.functional.interpolate(input=tenOne[-1], size=(tenFeaturesOne[intLevel].shape[2], tenFeaturesOne[intLevel].shape[3]), mode='bilinear', align_corners=False))
+            tenTwo.append(torch.nn.functional.interpolate(input=tenTwo[-1], size=(tenFeaturesTwo[intLevel].shape[2], tenFeaturesTwo[intLevel].shape[3]), mode='bilinear', align_corners=False))
+        
+        print("tenOne_0 shape: ", tenOne[0].shape)
+        print("tenOne_1 shape: ", tenOne[1].shape)
+        print("tenOne_2 shape: ", tenOne[2].shape)
+        print("tenOne_3 shape: ", tenOne[3].shape)
+        print("tenOne_4 shape: ", tenOne[4].shape)
+        print("tenOne_5 shape: ", tenOne[5].shape)        
+
+        tenFlow = None
+
+        for intLevel in [ -1, -2, -3, -4, -5 ]:
+            print("intLevel = " , intLevel)
+            tenFlow = self.netMatching[intLevel](tenOne[intLevel], tenTwo[intLevel], tenFeaturesOne[intLevel], tenFeaturesTwo[intLevel], tenFlow)
+            print("after Matching tenFlow shape", tenFlow.shape)
+            tenFlow = self.netSubpixel[intLevel](tenOne[intLevel], tenTwo[intLevel], tenFeaturesOne[intLevel], tenFeaturesTwo[intLevel], tenFlow)
+            print("after Subpixel tenFlow shape", tenFlow.shape)
+            tenFlow = self.netRegularization[intLevel](tenOne[intLevel], tenTwo[intLevel], tenFeaturesOne[intLevel], tenFeaturesTwo[intLevel], tenFlow)
+            print("after regularization tenFlow shape", tenFlow.shape)
+            if intLevel == -4:
+                tenFlow_tmp = tenFlow
+        
+        ipdb.set_trace()
+
+        return tenFlow * 20.0, tenFlow_tmp
     # end
 # end
-
 netNetwork = None
 
 ##########################################################
@@ -348,34 +426,84 @@ def estimate(tenOne, tenTwo):
     intWidth = tenOne.shape[2]
     intHeight = tenOne.shape[1]
 
-    assert(intWidth == 1024) # remember that there is no guarantee for correctness, comment this line out if you acknowledge this and want to continue
-    assert(intHeight == 436) # remember that there is no guarantee for correctness, comment this line out if you acknowledge this and want to continue
+    print("shape of input image: ", intWidth, " ", intHeight)
+    # assert(intWidth == 1024) # remember that there is no guarantee for correctness, comment this line out if you acknowledge this and want to continue
+    # assert(intHeight == 436) # remember that there is no guarantee for correctness, comment this line out if you acknowledge this and want to continue
 
     tenPreprocessedOne = tenOne.cuda().view(1, 3, intHeight, intWidth)
     tenPreprocessedTwo = tenTwo.cuda().view(1, 3, intHeight, intWidth)
 
+    # me: making multiple of 32
     intPreprocessedWidth = int(math.floor(math.ceil(intWidth / 32.0) * 32.0))
     intPreprocessedHeight = int(math.floor(math.ceil(intHeight / 32.0) * 32.0))
+    print("processed shape: " , intPreprocessedHeight, " " , intPreprocessedWidth)
 
     tenPreprocessedOne = torch.nn.functional.interpolate(input=tenPreprocessedOne, size=(intPreprocessedHeight, intPreprocessedWidth), mode='bilinear', align_corners=False)
     tenPreprocessedTwo = torch.nn.functional.interpolate(input=tenPreprocessedTwo, size=(intPreprocessedHeight, intPreprocessedWidth), mode='bilinear', align_corners=False)
-
-    tenFlow = torch.nn.functional.interpolate(input=netNetwork(tenPreprocessedOne, tenPreprocessedTwo), size=(intHeight, intWidth), mode='bilinear', align_corners=False)
+    ipdb.set_trace()
+    network_output, tenFlow_tmp = netNetwork.forward_v2(tenPreprocessedOne, tenPreprocessedTwo)
+    ipdb.set_trace()
+    tenFlow = torch.nn.functional.interpolate(input=network_output, size=(intHeight, intWidth), mode='bilinear', align_corners=False)
 
     tenFlow[:, 0, :, :] *= float(intWidth) / float(intPreprocessedWidth)
     tenFlow[:, 1, :, :] *= float(intHeight) / float(intPreprocessedHeight)
 
-    return tenFlow[0, :, :, :].cpu()
+    return tenFlow[0, :, :, :].cpu(), tenFlow_tmp[0,:,:,:].cpu()
 # end
 
 ##########################################################
+
+def plot_flow(flow, img_dim, flow_name, take_flow_size = False):
+    # ipdb.set_trace()
+    tmp_ = np.zeros((img_dim[1],img_dim[2],3))
+    if take_flow_size:
+        tmp_ = np.zeros((flow.shape[1], flow.shape[2], 3))
+    flow_np = flow.permute(1,2,0).numpy()
+    # tmp_[..., 1] = 255
+    tmp_[..., [0,2]] = cv2.normalize(flow_np,None, 0, 255, cv2.NORM_MINMAX)
+    cartesian_bgr = cv2.cvtColor(tmp_.astype(np.uint8), cv2.COLOR_HSV2BGR)    
+    cv2.imwrite(flow_name+'_bw.png',cartesian_bgr)    
+
+def get_image(i, dataset, PARENT_FOLDER, resize_dim):
+    image_path = os.path.join(PARENT_FOLDER, dataset, IMAGE_LOC, 'frame_' + '000{}'.format(i).zfill(6) + '.PNG')
+    # if not os.path.isabs(image_path):
+    if not os.path.exists(image_path):
+        return None
+    img = cv2.imread(image_path)
+    img = cv2.resize(img, dsize=resize_dim, interpolation=cv2.INTER_NEAREST)
+    img_tensor = torch.from_numpy(img).permute(2,1,0)
+    img_tensor = img_tensor.type(torch.float32)/255
+    return img_tensor #torch.from_numpy(img) #img
+
+def find_flow_using_cv2(img1, img2):
+    # ipdb.set_trace()
+    img1_ = np.transpose(img1.numpy(), (1,2,0))
+    img2_ = np.transpose(img2.numpy(), (1,2,0))
+    flow = cv2.calcOpticalFlowFarneback(img1_[:,:,0], img2_[:,:,0], None, 0.5, levels=3, winsize=15, iterations=3, poly_n=5, poly_sigma=1.2, flags=0)
+    return torch.from_numpy(flow).permute(2,1,0)
+    
 
 if __name__ == '__main__':
     tenOne = torch.FloatTensor(numpy.ascontiguousarray(numpy.array(PIL.Image.open(arguments_strOne))[:, :, ::-1].transpose(2, 0, 1).astype(numpy.float32) * (1.0 / 255.0)))
     tenTwo = torch.FloatTensor(numpy.ascontiguousarray(numpy.array(PIL.Image.open(arguments_strTwo))[:, :, ::-1].transpose(2, 0, 1).astype(numpy.float32) * (1.0 / 255.0)))
 
-    ipdb.set_trace()
-    tenOutput = estimate(tenOne, tenTwo)
+    og_dim = tenOne.shape
+    # get images from ultrasound and find flow
+    image_ind = [1,2]
+    img_list = []
+    PARENT_FOLDER = PARENT_FOLDER_TRAIN
+    dataset_name = LIST_OF_DATASETS_TRAIN[0]
+    for ind_ in image_ind:
+        print(ind_)
+        image_path = os.path.join(PARENT_FOLDER, dataset_name, IMAGE_LOC, 'frame_' + '000{}'.format(ind_).zfill(6) + '.PNG')
+        print(image_path)
+        # ipdb.set_trace()
+        img = get_image(ind_, dataset_name, PARENT_FOLDER, (og_dim[1], og_dim[2])) # img already tensor        
+        img_list.append(img)
+
+    # tenOutput_tmp: checking flow at smaller size and with one less layer  
+    tenOutput, tenOutput_tmp = estimate(tenOne, tenTwo)
+    output_US, output_US_tmp = estimate(img_list[0], img_list[1])
 
     objOutput = open(arguments_strOut, 'wb')
 
@@ -383,5 +511,25 @@ if __name__ == '__main__':
     numpy.array([ tenOutput.shape[2], tenOutput.shape[1] ], numpy.int32).tofile(objOutput)
     numpy.array(tenOutput.numpy().transpose(1, 2, 0), numpy.float32).tofile(objOutput)
 
+    # plotting flow in img form 
+    plot_flow(tenOutput, og_dim, 'img_trial')    
+    plot_flow(tenOutput_tmp, og_dim, 'img_tmp_trial', take_flow_size = True)
+    plot_flow(output_US, og_dim, 'img_trial_US')
+
+    ipdb.set_trace()
+    plot_flow(output_US_tmp, og_dim, 'img_tmp_trial_US', take_flow_size= True)
+    
+    # also find flow using CV2
+    US_flow_cv2 = find_flow_using_cv2(img_list[0], img_list[1])
+    print("flow shape : " , US_flow_cv2.shape)
+    plot_flow(US_flow_cv2, og_dim ,'img_cv2_trial_US', take_flow_size=True)
+    # tmp_ = np.zero_like(tenOne)
+    # tenOutput_np = tenOutput.numpy()
+    # tmp_[..., 1] = 255
+    # tmp_[..., [0,2]] = cv2.normalize(tenOutput_np,None, 0, 255, cv2.NORM_MINMAX)
+    # cartesian_bgr = cv2.cvtColor(tmp_, cv2.COLOR_HSV2BGR)    
+    # cv2.imwrite('flow_bgr.png',cartesian_bgr)
+
     objOutput.close()
+    ipdb.set_trace()
 # end
