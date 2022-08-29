@@ -1,3 +1,5 @@
+from distutils.util import change_root
+from pyexpat import features
 import numpy as np
 import torch
 import torch.nn as nn 
@@ -321,6 +323,28 @@ class FlowNet(torch.nn.Module):
         # return flow #* 20.0 
         return flow, None 
 
+class MotionModel(nn.Module):
+    '''
+    Motion model for temporal stream
+    input image size : (batch_size, 512, 32, 32)
+    # TODO: add args for input size
+    '''
+    def __init__(self):
+        super(MotionModel, self).__init__()
+        self.layers = nn.Sequential(
+            nn.Linear(512*32*32, 512*1*1),
+            nn.ReLU(),
+            nn.Linear(512*1*1, 512*32*32))
+
+    def forward(self, x):
+        '''
+        x: [batch_size, n_channels, height, width]
+        '''
+        batch_size, n_channels, H, W = x.size(0), x.size(1), x.size(2), x.size(3)
+        x = self.layers(x.view(batch_size, -1))
+        return x.view(batch_size, n_channels, H, W)
+
+
 class DoubleConv(nn.Module):
     """(convolution => [BN] => ReLU) * 2"""
 
@@ -362,7 +386,7 @@ class SingleConv(nn.Module):
 class Down(nn.Module):
     """Downscaling with maxpool then double conv"""
 
-    def __init__(self, in_channels, out_channels, conv_flag=1):
+    def __init__(self, in_channels, out_channels, conv_flag=1, mid_channels=None):
         super().__init__()
         if conv_flag == 1:
             self.maxpool_conv = nn.Sequential(
@@ -372,9 +396,8 @@ class Down(nn.Module):
         else:
             self.maxpool_conv = nn.Sequential(
                 nn.MaxPool2d(2), # kernel size is the input               
-                DoubleConv(in_channels, out_channels)
+                DoubleConv(in_channels, out_channels, (in_channels + out_channels)//2)
             )            
-
 
     def forward(self, x):
         return self.maxpool_conv(x)
@@ -382,36 +405,51 @@ class Down(nn.Module):
 class Up(nn.Module):
     """Upscaling then double conv"""
 
-    def __init__(self, in_channels, out_channels, bilinear=True, conv_flag=1):
+    def __init__(self, in_channels, out_channels, bilinear=True, conv_flag=1, attention_flag=False):
         super().__init__()
 
+        self.attention_flag = attention_flag
         # if bilinear, use the normal convolutions to reduce the number of channels
         if bilinear:
             # self.up = nn.Upsample(scale_factor=2, mode='bilinear', align_corners=True)
-            self.up = nn.Upsample(scale_factor=2, mode='bilinear')
+            if not attention_flag:
+                self.up = nn.Upsample(scale_factor=2, mode='bilinear')
+            else:
+                pass
+
             if conv_flag == 1:
                 self.conv = SingleConv(in_channels, out_channels)
             else:
                 self.conv = DoubleConv(in_channels, out_channels, in_channels // 2)
         else:
-            self.up = nn.ConvTranspose2d(in_channels, in_channels // 2, kernel_size=2, stride=2)
+            if not attention_flag:
+                self.up = nn.ConvTranspose2d(in_channels, in_channels // 2, kernel_size=2, stride=2)
+            else:
+                pass
+
             if conv_flag == 1:
                 self.conv = SingleConv(in_channels, out_channels)
             else:
                 self.conv = DoubleConv(in_channels, out_channels, in_channels // 2)
 
     def forward(self, x1, x2):
-        x1 = self.up(x1)
-        # input is CHW
-        diffY = x2.size()[2] - x1.size()[2]
-        diffX = x2.size()[3] - x1.size()[3]
 
-        x1 = F.pad(x1, [diffX // 2, diffX - diffX // 2,
-                        diffY // 2, diffY - diffY // 2])
-        # if you have padding issues, see
-        # https://github.com/HaiyongJiang/U-Net-Pytorch-Unstructured-Buggy/commit/0e854509c2cea854e247a9c615f175f76fbb2e3a
-        # https://github.com/xiaopeng-liao/Pytorch-UNet/commit/8ebac70e633bac59fc22bb5195e513d5832fb3bd
-        x = torch.cat([x2, x1], dim=1)
+        if not self.attention_flag:
+            x1 = self.up(x1)
+            # input is CHW
+            diffY = x2.size()[2] - x1.size()[2]
+            diffX = x2.size()[3] - x1.size()[3]
+
+            x1 = F.pad(x1, [diffX // 2, diffX - diffX // 2,
+                            diffY // 2, diffY - diffY // 2])
+            # if you have padding issues, see
+            # https://github.com/HaiyongJiang/U-Net-Pytorch-Unstructured-Buggy/commit/0e854509c2cea854e247a9c615f175f76fbb2e3a
+            # https://github.com/xiaopeng-liao/Pytorch-UNet/commit/8ebac70e633bac59fc22bb5195e513d5832fb3bd
+            x = torch.cat([x2, x1], dim=1)
+
+        else:
+            x = x1
+            
         return self.conv(x)
 
 class OutConv(nn.Module):
@@ -422,89 +460,296 @@ class OutConv(nn.Module):
     def forward(self, x):
         return self.conv(x)
 
+class AttentionGate(nn.Module):
+    def __init__(self, in_channels_up, in_channels_skip, device = 'cuda') -> None:
+        super(AttentionGate, self).__init__()
+        out_channels = in_channels_skip
+        self.conv_skip = nn.Conv2d(in_channels_skip, out_channels,kernel_size=1, stride=2)
+        self.conv_up = nn.Conv2d(in_channels_up, out_channels,kernel_size=1, stride=1)
+        self.non_linearity = nn.ReLU(inplace=True)
+        self.conv_out = nn.Conv2d(out_channels, 1, kernel_size= 1)
+        self._sigmoid = nn.Sigmoid()
+        self.up = nn.Upsample(scale_factor=2, mode='bilinear')
+
+        ## push to cuda 
+        self.conv_skip.to(device)
+        self.conv_up.to(device)
+        self.conv_out.to(device)
+
+    def forward(self, _up, _skip):
+
+        # map features to same channel dim 
+        # ipdb.set_trace()
+        _skip_conv = self.conv_skip(_skip)
+        _up_conv = self.conv_up(_up)
+        # take summation 
+        _out = _skip_conv + _up_conv
+        # relu + map to single channel
+        _out_conv = self.conv_out(self.non_linearity(_out))
+        # sigmoid to scale between 0 - 1 
+        _out_conv = self._sigmoid(_out_conv)
+        # upsample 
+        _out_conv = self.up(_out_conv)
+
+        return _out_conv
+
 class UNet(nn.Module):
-    def __init__(self, n_channels, n_classes, bilinear=False, conv_flag=1, classification=False):
+    '''
+    Based off https://arxiv.org/pdf/1505.04597.pdf
+
+    the network expects an input of shape B x n_channels x H x W and outputs a segmentation mask without sigmoid  (sigmoid subsumed in BCEwithlogits) 
+    
+    n_channels depends on variant of input: 
+    ***
+    some examples: only image then n_channels = 1 
+                   image and flow concatenated then n_channels = 2 
+                   image and flow added then n_channels = 1 
+                   pre-processing image and flow through conv2d, then n_channels = output of conv2d
+    ***
+
+    inputs: 
+            input channels : n_channels
+            # of classes to predict : n_classes 
+            depth of network : n_depth
+    input flags: 
+            bilinear : whether to use bilinear interpolation during upsampling or not 
+            conv_flag : how many conv2d to use in each downsampling and upsampling in encoder and decoder, current options: 1 or 2
+            classification_flag : when true will also compute classification/contrastive loss by taking the last feature of encoder and passing to linear layer
+            attention_flag : if true will use attention gates when upsampling in decoder 
+    '''
+    def __init__(self, n_channels, n_classes, n_depth=4, bilinear=False, conv_flag=1, classification_flag=False, attention_flag=False, multi_attn=0 ,device = 'cuda', motion_flag=False):
         super(UNet, self).__init__()
         self.n_channels = n_channels
         self.n_classes = n_classes
+        self.__depth = n_depth
         self.bilinear = bilinear
-        self.classification = classification
+        self.classification_flag = classification_flag
+        self.attention_flag = attention_flag
+        self.multi_attn = multi_attn
+        self.motion_flag = motion_flag
+        self.device = device
 
-        ## CAN ALSO REDUCE # CHANNELS BY 2 
-        self.inc = DoubleConv(n_channels, 64)
-        self.down1 = Down(64, 128, conv_flag)
-        self.down2 = Down(128, 256, conv_flag)
-        self.down3 = Down(256, 512, conv_flag)
+        __feature_size = 64
+        __features = [__feature_size*(2**i) for i in range(self.__depth)]
+        self.__features = __features
+        #? down sample (encoder)
+        self.inc = DoubleConv(n_channels, __features[0])
+        # self.down = [Down(__features[i], __features[i+1], conv_flag) for i in range(self.__depth-1)]
+        self.down1 = Down(__features[0], __features[1], conv_flag)
+        self.down2 = Down(__features[1], __features[2], conv_flag)
+        self.down3 = Down(__features[2], __features[3], conv_flag)
+#         # self.down4 = Down(__features[3], __features[4] // factor, conv_flag)
+#         # self.up1 = Up(__features[4], __features[3] // factor, bilinear, conv_flag)
         factor = 2 if bilinear else 1
-        self.down4 = Down(512, 1024 // factor, conv_flag)
-        self.up1 = Up(1024, 512 // factor, bilinear, conv_flag)
-        self.up2 = Up(512, 256 // factor, bilinear, conv_flag)
-        self.up3 = Up(256, 128 // factor, bilinear, conv_flag)
-        self.up4 = Up(128, 64, bilinear, conv_flag)
-        self.outc = OutConv(64, n_classes)
+        # self.down4 = Down(__features[3], __features[4] // factor, conv_flag)
 
-        # add fc layers for classification or contrastive 
-        if self.classification:
+        #? add fc layers for classification or contrastive 
+        if self.classification_flag:
             in_features_ = (1024//factor)*16*16
             self.fc = nn.Linear(in_features_, 1) # only 2 classes 
-            
+        
+        # #? up sample (decoder)
+        #? declare attention layers, if n depth then n-1 attention 
+        if attention_flag:
 
-    def forward(self, x):
-        x1 = self.inc(x)
+            self.att11 = AttentionGate(__features[3], __features[2])
+            self.att12 = AttentionGate(__features[2], __features[1])
+            self.att13 = AttentionGate(__features[1], __features[0])
+            
+            # self.att = [AttentionGate(__features[i], __features[i-1], device) for i in range(self.__depth-1,0,-1)]
+            #* no change in feature number during upsampling when using attention gates
+            # self.up = [Up(__features[i-1], __features[i-1] // factor, bilinear, conv_flag, attention_flag) for i in range(self.__depth-1,0,-1)]
+            self.up2 = Up(__features[2], __features[2], bilinear, conv_flag, attention_flag)
+            self.up3 = Up(__features[1], __features[1], bilinear, conv_flag, attention_flag)
+            self.up4 = Up(__features[0], __features[0], bilinear, conv_flag, attention_flag)
+
+            if multi_attn > 0:
+                # can also use these at bottleneck layer 
+                # self.att_multi = [AttentionGate(__features[-1], __features[-2], device) for i in range(multi_attn)]                
+                self.att21 = AttentionGate(__features[3], __features[2])
+                self.att22 = AttentionGate(__features[2], __features[1])
+                self.att23 = AttentionGate(__features[1], __features[0])
+                
+                self.att31 = AttentionGate(__features[3], __features[2])
+                self.att32 = AttentionGate(__features[2], __features[1])
+                self.att33 = AttentionGate(__features[1], __features[0])
+
+                self.att41 = AttentionGate(__features[3], __features[2])
+                self.att42 = AttentionGate(__features[2], __features[1])
+                self.att43 = AttentionGate(__features[1], __features[0])                                            
+
+        else:
+            # # self.up = [Up(__features[i], __features[i-1] // factor, bilinear, conv_flag) for i in range(self.__depth-1,0,-1)]
+            self.up2 = Up(__features[3], __features[2] // factor, bilinear, conv_flag)
+            self.up3 = Up(__features[2], __features[1] // factor, bilinear, conv_flag)
+            self.up4 = Up(__features[1], __features[0], bilinear, conv_flag)
+
+
+        #? final layer 
+        self.outc = OutConv(__features[0], n_classes)
+        
+        if self.motion_flag:
+            self.motion_net = MotionModel()
+
+        ## push everything to cuda 
+        # for i in range(self.__depth-1):
+        #     self.down[i].to(device) 
+        #     self.up[i].to(device)
+        # if attention_flag:
+        #     for i in range(self.__depth-2):
+        #         self.att[i].to(device)
+        # if multi_attn:
+        #     for i in range(multi_attn):
+        #         self.att_multi[i].to(device)
+
+    def forward(self, x, batch_size=10):
+        '''
+            x can contain multiple inputs from previous time-steps concatenated along batch so that 
+            feature extraction can be done in parallel 
+        '''
+        prev_img = x[3*batch_size:4*batch_size].clone()
+        _x = x[0:batch_size]
+        x1 = self.inc(_x)
         x2 = self.down1(x1)
         x3 = self.down2(x2)
-        x4 = self.down3(x3)
-        x5 = self.down4(x4)
+        x4 = self.down3(x3)   
 
-        # ipdb.set_trace()
-        if self.classification:
-            needle_classfication_logits = self.fc(x5.flatten(1,-1))
+        # features_list = [x1]
+        # for i in range(self.__depth-1):
+        #     _x = self.down[i](features_list[-1])
+        #     features_list.append(_x)
+        
+        # if self.classification_flag:
+            # needle_classfication_logits = self.fc(x5.flatten(1,-1))
+            #! "adding contrastive loss based on 2006 Lecunn paper"
+            #? for contrastive use : dist_mat = torch.cdist(batch, batch) and torch.logical_xor to get corresponding label matrix
+            #? self.margin*label_matrix - label_matrix*dist_mat
+            #? loss = (1-label_matrix)*dist_mat + label_matrix*(self.margin - dist_mat)
+            # margin = 10
+            # x5_flat = x5.flatten(1,-1)
+            # dist_mat = torch.cdist(x5_flat, x5_flat)
+            # tt = torch.randint(0,1,(10,1))
+            # label_matrix = torch.logical_xor(tt, tt.permute(1,0))
+        # else:
+        #     batch = x5.shape[0]
+        #     needle_classfication_logits = torch.zeros(batch, 1, dtype=x5.dtype)
+        if self.motion_flag:
+            prev_x1 = self.inc(prev_img)
+            prev_x2 = self.down1(prev_x1)
+            prev_x3 = self.down2(prev_x2)
+            prev_x4 = self.down3(prev_x3)
+            motion_logits = self.motion_net(prev_x4)
+            motion_label = x4.clone()
+
+
+
+
+        if self.attention_flag:
+            # this will work for single image, need to change for multiple images as first attention mask would be different
+            if self.multi_attn > 0:                
+                _scale = self.multi_attn+1
+
+                #* downsample flow to different size 
+                _flow = x[batch_size:] #torch.flip(x[batch_size:], dim=0) #
+                _flow_l1 = torch.cat([F.interpolate(_flow, scale_factor= 1)]*self.__features[0], dim=1)
+                _flow_l2 = torch.cat([F.interpolate(_flow, scale_factor = 0.5)]*self.__features[1], dim=1)
+                _flow_l3 = torch.cat([F.interpolate(_flow, scale_factor = 0.25)]*self.__features[2], dim=1)
+                # find attention with own feature at different level
+                att_other_list = []
+                att_self1 = self.att11(x4, x3[0:batch_size])
+                att_other21 = self.att21(x4, _flow_l3[0:batch_size])
+                att_other31 = self.att31(x4, _flow_l3[batch_size:2*batch_size])
+                att_other41 = self.att41(x4, _flow_l3[2*batch_size:3*batch_size])
+                # att1 = torch.cat([att_self1, att_other21, att_other31, att_other41], dim=1)
+                att1 = (att_self1 + att_other21 + att_other31 + att_other41)/(self.multi_attn + 1)
+                #* 0:batch_size is current image 
+                #* 3*batch_size: 4*batch_size is {current - 1} image 
+                #* 2*batch_size: 3*batch_size is {current - 2} image  and so on 
+                y = x3*att1
+                # y = att1[:,0:1]*x3[0:batch_size] + att1[:,3:4]*x3[3*batch_size:4*batch_size] + att1[:,2:3]*x3[2*batch_size:3*batch_size] + att1[:,1:2]*x3[batch_size:2*batch_size]
+                
+                # att1 = F.softmax(torch.cat([att_self1, att_other1],dim=1), dim=1)                
+                # att1 = torch.cat([att_self1, att_other1],dim=1)
+                # y = att1[:,0:1] * x3[0:batch_size] + att1[:,0:1] * att1[:,1:2] * x3[batch_size:2*batch_size]                
+                y = self.up2(y, None)
+                
+                # find attention between y and previous images 
+                att_self2 = self.att12(y, x2[0:batch_size])
+                att_other22 = self.att22(y, _flow_l2[0:batch_size])
+                #! add stuff here
+                att_other32 = self.att32(y, _flow_l2[batch_size:2*batch_size])
+                att_other42 = self.att42(y, _flow_l2[2*batch_size:3*batch_size])
+                # att2 = torch.cat([att_self2, att_other22, att_other32, att_other42],dim=1)
+                att2 = (att_self2 + att_other22 + att_other32 + att_other42)/(self.multi_attn + 1)
+                # y = att2[:,0:1]*(x2[0:batch_size] + att2[:,3:4]*(x2[3*batch_size:4*batch_size] + att2[:,2:3]*(x2[2*batch_size:3*batch_size] + att2[:,1:2]*x2[batch_size:2*batch_size] )))
+                y = att2 * x2
+                # att2 = torch.cat([att_self2, att_other2], dim=1)
+                # y = att2[:,0:1] * x2[0:batch_size] + att2[:,0:1] * att2[:,1:2] * x2[batch_size:2*batch_size]
+                y = self.up3(y, None)
+
+                att_self3 = self.att13(y, x1[0:batch_size])
+                att_other23 = self.att23(y, _flow_l1[0:batch_size])
+                #! add stuff here
+                att_other33 = self.att33(y, _flow_l1[batch_size:2*batch_size])
+                att_other43 = self.att43(y, _flow_l1[2*batch_size:3*batch_size])                
+
+                att3 = (att_self3 + att_other23 + att_other33 + att_other43)/(self.multi_attn + 1)
+                y = att3 * x1
+                # y = att3[:,0:1]*(x1[0:batch_size] + att3[:,3:4]*(x1[3*batch_size:4*batch_size] + att3[:,2:3]*(x1[2*batch_size:3*batch_size] + att3[:,1:2]*x1[batch_size:2*batch_size])))
+                
+                # att3 = torch.cat([att_self3, att_other3], dim=1)
+                # y = att3[:,0:1] * x1[0:batch_size] + att3[:,0:1] * att3[:,1:2] * x1[batch_size:2*batch_size]
+                y = self.up4(y, None)
+                
+            else:
+                att_self1 = self.att11(x4, x3)
+                y = self.up2(att_self1 * x3, None)
+
+                att_self2 = self.att12(y, x2)
+                y = self.up3(att_self2 * x2, None)
+
+                att_self3 = self.att13(y, x1)
+                y = self.up4(att_self3 * x1, None)
+
         else:
-            batch = x5.shape[0]
-            needle_classfication_logits = torch.zeros(batch, 1, dtype=x5.dtype)
+            # y = self.up[0](features_list[-1], features_list[-2])        
+            # y = self.up[1](y, features_list[-3])
+            # y = self.up[2](y, features_list[-4])
+            y = self.up2(x4, x3)        
+            y = self.up3(y, x2)
+            y = self.up4(y, x1)
 
-        # print("adding contrastive loss based on 2006 Lecunn paper")
-        # ipdb.set_trace()
-        #? for contrastive use : dist_mat = torch.cdist(batch, batch) and torch.logical_xor to get corresponding label matrix
-        #? self.margin*label_matrix - label_matrix*dist_mat
-        #? loss = (1-label_matrix)*dist_mat + label_matrix*(self.margin - dist_mat)
-        # margin = 10
-        # x5_flat = x5.flatten(1,-1)
-        # dist_mat = torch.cdist(x5_flat, x5_flat)
-        # tt = torch.randint(0,1,(10,1))
-        # label_matrix = torch.logical_xor(tt, tt.permute(1,0))
-
-        # print("shapes: ")
-        # print("x1: ", x1.shape)
-        # print("x2: ", x2.shape)
-        # print("x3: ", x3.shape)
-        # print("x4: ", x4.shape)
-        # print("x5: ", x5.shape)
-
-        y = self.up1(x5, x4)
-        # print("y shape: " , y.shape)
-        y = self.up2(y, x3)
-        # print("y shape: " , y.shape)
-        y = self.up3(y, x2)
-        # print("y shape: " , y.shape)
-        y = self.up4(y, x1)
-        # print("y shape: " , y.shape)
+        # for plotting 
+        last_encoder_feature = nn.Upsample(size=(64,64), mode='bilinear')(x4)
 
         logits = self.outc(y)
-        # ipdb.set_trace()
-        
-        return logits, x5 #needle_classfication_logits
+        if self.motion_flag:
+            return logits, last_encoder_feature, motion_logits, motion_label
+        else:
+            return logits, last_encoder_feature #needle_classfication_logits
 
 
 class TwoStreamUNet(nn.Module):
+    '''
+    main class for needle tracking using unet as a base and adding different ideas 
+    we use <var>_flag to decide which particular idea to try 
+    <var>_flag are store_action arg-pasrsers 
+    For examples if using pure_images, 
+                 or using additional classification_loss 
+                 or using attention gates 
+                 or using learned optical flow 
+    '''
     def __init__(self,spatial_in_channel, temporal_in_channel, out_channel, n_classes, \
-                pure_images_flag=False, conv_flag=1, learned_flow=False, classification=False) -> None:
+                pure_images_flag=False, conv_flag=1, learned_flow=False, classification_flag=False,\
+                    attention_flag = False, multi_attn = 0, device = 'cuda', motion_flag=False) -> None:
         super(TwoStreamUNet, self).__init__()
         
         self.pure_images_flag = pure_images_flag
         self.temporal_in_channel = temporal_in_channel
         self.n_classes = n_classes
         self.learned_flow = learned_flow
+        self.multi_attn = multi_attn
+        self.motion_flag = motion_flag
 
         # each flow has two channels x and y direction 
         #? using lightflownet
@@ -522,21 +767,22 @@ class TwoStreamUNet(nn.Module):
             self.spatial_conv = DoubleConv(spatial_in_channel, out_channel) 
             self.n_channels = out_channel 
         else:
-            #? lets remove these DoubleConv
+            #? lets remove these DoubleConv?
             # self.spatial_conv = DoubleConv(spatial_in_channel, out_channel)  
             # self.temporal_conv = DoubleConv(temporal_in_channel, out_channel)
-            # self.n_channels = 2*out_channel
-            self.n_channels = 2 # concatenating and sending image and flow together
-            ## TRYING MULTIPLICATION INSTEAD OF CONCATENTATION 
+            self.n_channels = 1 #out_channel # 16 
+            # self.n_channels = 1 # concatenating and sending image and flow together            
             # self.n_channels = out_channel    
         
         # if additional loss then change in UNet 
-        self.UNet = UNet(self.n_channels, n_classes, bilinear=False, conv_flag=conv_flag, classification=classification)
+        self.UNet = UNet(self.n_channels, n_classes, bilinear=False, conv_flag=conv_flag, 
+                        classification_flag=classification_flag, attention_flag=attention_flag, multi_attn=multi_attn, device = device, motion_flag=motion_flag)
 
     def forward(self, image, flow, image_prev):
-
-        # x_spatial, x_temporal = self.TwoStream(image, flow)
-        # ipdb.set_trace()
+        '''
+            image is the image at last time step (t)
+            image_prev are images from (t-k) time steps: t-1, t-2, .... 
+        '''
         if self.pure_images_flag:
             x_spatial = self.spatial_conv(image)
             logits = self.UNet(x_spatial)
@@ -565,115 +811,141 @@ class TwoStreamUNet(nn.Module):
             # logits = self.UNet(image_flow_combined)
             
         else:
-            # ipdb.set_trace()
-            pass
+            batch_size = image.shape[0]
             # x_spatial = self.spatial_conv(image)
-            # x_temporal = self.temporal_conv(flow) 
-            # image_flow_combined = torch.cat([x_spatial, x_temporal], dim=1)     
+            # x_temporal = self.temporal_conv(flow) #* add features and then attention ?
+            # image_flow_combined = x_spatial + x_temporal #torch.cat([x_spatial, x_temporal], dim=1)     
+            #* variations can be tried here: 
+            # image_flow_combined = x_spatial * x_temporal
+            x_spatial = torch.zeros(10,32,128,128)
+            x_temporal = torch.zeros(10,32,128,128)
+            # image_flow_combined = torch.cat([image,flow], dim=1)
+            image_flow_combined = image #+ flow
+            if self.multi_attn > 0:
+                # image_prev is B x multi_attn x H x W, switch it to B*multi_attn x 1 x H x W 
+                _channels = image_prev.shape[1] #  should be samea as multi_attn
+                _h, _w = image_prev.shape[-2], image_prev.shape[-1]
+                _image_prev = image_prev.view(batch_size*_channels, 1, _h, _w).type(torch.float32)
+                _flow = flow.view(batch_size*_channels, 1, _h, _w).type(torch.float32)
 
+                image_ = torch.cat([image.type(torch.float32), _flow], dim=0) # concatenate along batch 
+                
+                # x_spatial = self.spatial_conv(image_)
+                # x_temporal = self.temporal_conv(_flow)
+                # image_ = x_spatial + torch.cat([torch.zeros_like(x_temporal[:batch_size]), x_temporal], dim=0)
+                # image_ = image_ + torch.cat([torch.zeros_like(_flow[:batch_size], dtype=torch.float32), _flow], dim=0)
 
-        # image_flow_combined = x_spatial * x_temporal
-        x_spatial = torch.zeros(10,32,128,128)
-        x_temporal = torch.zeros(10,32,128,128)
-        image_flow_combined = torch.cat([image,flow], dim=1)
-        logits, needle_classfication_logits = self.UNet(image_flow_combined)
+                # print("dtype _image_prev = " , _image_prev.dtype)                
+            else:
+                image_ = image
 
-        if self.learned_flow: #? return flow to plot 
+            
+
+        # logits, needle_classfication_logits = self.UNet(image_flow_combined)
+        if self.motion_flag:
+            logits, needle_classfication_logits, motion_logits, motion_label = self.UNet(image_, batch_size)
+        else:
+            logits, needle_classfication_logits = self.UNet(image_, batch_size)
+
+        # logits, needle_classfication_logits = self.UNetV2(image, image_prev)
+
+        if self.learned_flow: # return flow as well to log in tensorboard 
             return logits, needle_classfication_logits, x_spatial, x_temporal, flow
+        elif self.motion_flag:
+            return logits, needle_classfication_logits,x_spatial, x_temporal, motion_logits, motion_label
         else:
             return logits, needle_classfication_logits, x_spatial, x_temporal
 
 
-class TwoStreamUNetLateFusion(nn.Module):
-    def __init__(self,spatial_in_channel, temporal_in_channel, out_channel, n_classes, pure_images_flag=False, conv_flag=1, bilinear=False) -> None:
-        # super(TwoStreamUNet, self).__init__(spatial_in_channel, temporal_in_channel, out_channel, n_classes, pure_images_flag, conv_flag)
-        super(TwoStreamUNetLateFusion, self).__init__()
+# class TwoStreamUNetLateFusion(nn.Module):
+#     '''
+#     ignor this class for time being 
+#     '''
+#     def __init__(self,spatial_in_channel, temporal_in_channel, out_channel, n_classes, pure_images_flag=False, conv_flag=1, bilinear=False) -> None:
+#         # super(TwoStreamUNet, self).__init__(spatial_in_channel, temporal_in_channel, out_channel, n_classes, pure_images_flag, conv_flag)
+#         super(TwoStreamUNetLateFusion, self).__init__()
 
-        # ipdb.set_trace()        
-        self.temporal_in_channel = temporal_in_channel
-        self.n_classes = n_classes
-        self.n_channels = 1
-        self.bilinear = bilinear 
+#         # ipdb.set_trace()        
+#         self.temporal_in_channel = temporal_in_channel
+#         self.n_classes = n_classes
+#         self.n_channels = 1
+#         self.bilinear = bilinear 
 
-        # encoder set for spatial 
-        # self.UNet = UNet(self.n_channels, n_classes, conv_flag)
-        encoder_scale = 2
-        self.inc_s = DoubleConv(spatial_in_channel, 64//encoder_scale)
-        self.down1_s = Down(64//encoder_scale, 128//encoder_scale, conv_flag)
-        self.down2_s = Down(128//encoder_scale, 256//encoder_scale, conv_flag)
-        self.down3_s = Down(256//encoder_scale, 512//encoder_scale, conv_flag)
-        factor = 2 if self.bilinear else 1
-        # self.down4_s = Down(512, 1024 // factor, conv_flag)
-        self.down4_s = Down(512//encoder_scale, 1024//encoder_scale, conv_flag)
+#         # encoder set for spatial 
+#         # self.UNet = UNet(self.n_channels, n_classes, conv_flag)
+#         encoder_scale = 2
+#         self.inc_s = DoubleConv(spatial_in_channel, 64//encoder_scale)
+#         self.down1_s = Down(64//encoder_scale, 128//encoder_scale, conv_flag)
+#         self.down2_s = Down(128//encoder_scale, 256//encoder_scale, conv_flag)
+#         self.down3_s = Down(256//encoder_scale, 512//encoder_scale, conv_flag)
+#         factor = 2 if self.bilinear else 1
+#         # self.down4_s = Down(512, 1024 // factor, conv_flag)
+#         self.down4_s = Down(512//encoder_scale, 1024//encoder_scale, conv_flag)
 
-        # encoder set for temporal 
-        self.inc_t = DoubleConv(temporal_in_channel, 64//encoder_scale)
-        self.down1_t = Down(64//encoder_scale, 128//encoder_scale, conv_flag)
-        self.down2_t = Down(128//encoder_scale, 256//encoder_scale, conv_flag)
-        self.down3_t = Down(256//encoder_scale, 512//encoder_scale, conv_flag)
-        factor = 2 if self.bilinear else 1
-        # self.down4_t = Down(512, 1024 // factor, conv_flag)
-        self.down4_t = Down(512//encoder_scale, 1024//encoder_scale, conv_flag)
+#         # encoder set for temporal 
+#         self.inc_t = DoubleConv(temporal_in_channel, 64//encoder_scale)
+#         self.down1_t = Down(64//encoder_scale, 128//encoder_scale, conv_flag)
+#         self.down2_t = Down(128//encoder_scale, 256//encoder_scale, conv_flag)
+#         self.down3_t = Down(256//encoder_scale, 512//encoder_scale, conv_flag)
+#         factor = 2 if self.bilinear else 1
+#         # self.down4_t = Down(512, 1024 // factor, conv_flag)
+#         self.down4_t = Down(512//encoder_scale, 1024//encoder_scale, conv_flag)
 
-        # common decoder concatenate both encoder outputs | spatial, temporal or both        
-        scale = 1
-        self.up1 = Up(scale*1024, scale*512 // factor, bilinear, conv_flag)
-        self.up2 = Up(scale*512, scale*256 // factor, bilinear, conv_flag)
-        self.up3 = Up(scale*256, scale*128 // factor, bilinear, conv_flag)
-        self.up4 = Up(scale*128, 64, bilinear, conv_flag)
-        self.outc = OutConv(64, n_classes)
+#         # common decoder concatenate both encoder outputs | spatial, temporal or both        
+#         scale = 1
+#         self.up1 = Up(scale*1024, scale*512 // factor, bilinear, conv_flag)
+#         self.up2 = Up(scale*512, scale*256 // factor, bilinear, conv_flag)
+#         self.up3 = Up(scale*256, scale*128 // factor, bilinear, conv_flag)
+#         self.up4 = Up(scale*128, 64, bilinear, conv_flag)
+#         self.outc = OutConv(64, n_classes)
 
-    def forward(self, image, flow):
-        # find features for spatial input : image 
-        x1_s = self.inc_s(image)
-        x2_s = self.down1_s(x1_s)
-        x3_s = self.down2_s(x2_s)
-        x4_s = self.down3_s(x3_s)
-        x5_s = self.down4_s(x4_s)
+#     def forward(self, image, flow):
+#         # find features for spatial input : image 
+#         x1_s = self.inc_s(image)
+#         x2_s = self.down1_s(x1_s)
+#         x3_s = self.down2_s(x2_s)
+#         x4_s = self.down3_s(x3_s)
+#         x5_s = self.down4_s(x4_s)
 
-        # find features for temporal input : flow 
-        x1_t = self.inc_t(flow)
-        x2_t = self.down1_t(x1_t)
-        x3_t = self.down2_t(x2_t)
-        x4_t = self.down3_t(x3_t)
-        x5_t = self.down4_t(x4_t)
+#         # find features for temporal input : flow 
+#         x1_t = self.inc_t(flow)
+#         x2_t = self.down1_t(x1_t)
+#         x3_t = self.down2_t(x2_t)
+#         x4_t = self.down3_t(x3_t)
+#         x5_t = self.down4_t(x4_t)
 
-        # concatenate x5_s, x5_t
-        x5 = torch.cat([x5_s, x5_t], dim = 1)
-        x4 = torch.cat([x4_s, x4_t], dim = 1)
-        x3 = torch.cat([x3_s, x3_t], dim = 1)
-        x2 = torch.cat([x2_s, x2_t], dim = 1)
-        x1 = torch.cat([x1_s, x1_t], dim = 1)
+#         # concatenate x5_s, x5_t
+#         x5 = torch.cat([x5_s, x5_t], dim = 1)
+#         x4 = torch.cat([x4_s, x4_t], dim = 1)
+#         x3 = torch.cat([x3_s, x3_t], dim = 1)
+#         x2 = torch.cat([x2_s, x2_t], dim = 1)
+#         x1 = torch.cat([x1_s, x1_t], dim = 1)
 
-        # element wise mulitply 
-        # x5 = x5_s * x5_t        
-        # x4 = x4_s * x4_t        
-        # x3 = x3_s * x3_t        
-        # x2 = x2_s * x2_t        
-        # x1 = x1_s * x1_t        
-        # print("shapes: ")
-        # print("x1: ", x1.shape)
-        # print("x2: ", x2.shape)
-        # print("x3: ", x3.shape)
-        # print("x4: ", x4.shape)
-        # print("x5: ", x5.shape)
+#         # element wise mulitply 
+#         # x5 = x5_s * x5_t        
+#         # x4 = x4_s * x4_t        
+#         # x3 = x3_s * x3_t        
+#         # x2 = x2_s * x2_t        
+#         # x1 = x1_s * x1_t        
 
-        y = self.up1(x5, x4)
-        # print("y shape: " , y.shape)
-        y = self.up2(y, x3)
-        # print("y shape: " , y.shape)
-        y = self.up3(y, x2)
-        # print("y shape: " , y.shape)
-        y = self.up4(y, x1)
-        # print("y shape: " , y.shape)
+#         y = self.up1(x5, x4)
+#         # print("y shape: " , y.shape)
+#         y = self.up2(y, x3)
+#         # print("y shape: " , y.shape)
+#         y = self.up3(y, x2)
+#         # print("y shape: " , y.shape)
+#         y = self.up4(y, x1)
+#         # print("y shape: " , y.shape)
 
-        # ipdb.set_trace()
-        logits = self.outc(y)        
+#         # ipdb.set_trace()
+#         logits = self.outc(y)        
         
-        return logits, None, None         
+#         return logits, None, None         
 
 
 ## add late fusion instead of early fusion 
 ## add multiple fusions instead of single fusion 
 ## reduce network size 
 ## add correlation thingy 
+
+

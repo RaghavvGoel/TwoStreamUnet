@@ -2,6 +2,7 @@ import enum
 import os
 from os.path import splitext
 from os import listdir
+from tkinter import N
 import numpy as np
 from glob import glob
 import torch
@@ -17,15 +18,15 @@ torch.manual_seed(10)
 convert_tensor = transforms.ToTensor()
 # add augmentation 
 transform_ = transforms.Compose([transforms.RandomHorizontalFlip(p=0.5),
-                               transforms.RandomRotation(15),
-                               transforms.RandomVerticalFlip(p=0.5),                               
+                               transforms.RandomRotation(10),
+                            #    transforms.RandomVerticalFlip(p=0.5),                               
                             ])
 
-transform_image = transforms.Compose([
-                                    transforms.GaussianBlur(kernel_size=3, sigma=(0.01,2)),
-                                    # transforms.ColorJitter(brightness=(0,0.1), contrast=(0,0.1))
+transform_blur = transforms.Compose([transforms.GaussianBlur(kernel_size=5, sigma=(0.01,2)),
                                 ])                        
-
+# only for images and not for flows
+transform_jitter = transforms.Compose([lambda x:x/255,
+                                        transforms.ColorJitter([0.8, 1.2])])
 IMAGE_LOC  = 'JPEGImages'
 MASK_LOC = 'SegmentationClass'
 # save_number = '2'
@@ -47,11 +48,12 @@ def get_dict_vals(data):
 def get_image(i, dataset, PARENT_FOLDER):
     image_path = os.path.join(PARENT_FOLDER, dataset, IMAGE_LOC, 'frame_' + '000{}'.format(i).zfill(6) + '.PNG')
     # if not os.path.isabs(image_path):
+    # TODO: add try and except here instead of if 
     if not os.path.exists(image_path):
         return None
     img = cv2.imread(image_path)
     img = cv2.resize(img, dsize=(256,256), interpolation=cv2.INTER_NEAREST)
-    return torch.from_numpy(img) #img
+    return img #img
 
 def get_mask(i, dataset, PARENT_FOLDER):
     mask_path = os.path.join(PARENT_FOLDER, dataset, MASK_LOC, 'frame_' + '000{}'.format(i).zfill(6) + '.png')
@@ -127,8 +129,9 @@ def find_flow_history(image_list, img_H, img_W, n_history=1, abs_flag = False):
     cartesian = np.zeros((img_H,img_W,3), dtype=np.uint8)
     for k in range(n_history):    
         if len(image_list) > n_history:        
-            prvs = np.array(image_list[-1-k])
-            next = np.array(image_list[-1-k-1])
+            prvs = np.array(image_list[-1-1-k])
+            # next = np.array(image_list[-1-k-1]) # fixed 
+            next = np.array(image_list[-1]) # fixed 
 
             # ipdb.set_trace()
             flow = cv2.calcOpticalFlowFarneback(prvs, next, None, 0.5, levels=3, winsize=15, iterations=3, poly_n=5, poly_sigma=1.2, flags=0)                        
@@ -150,27 +153,53 @@ def find_flow_history(image_list, img_H, img_W, n_history=1, abs_flag = False):
     # print(np.concatenate(flowX_list, axis=-1).shape)
     return np.concatenate(flow_list, axis=-1), np.concatenate(flowX_list, axis=-1), np.concatenate(flowY_list, axis=-1)
 
+def find_image_history(image_list, n_history):
+    '''
+        concatenate t-n-histroy to t-1 images if they dont exist then add blanks
+    '''
+    if len(image_list)-1 >= n_history:
+        # return np.stack(image_list[-n_history-1:-1], axis=0) # need extra dim to apply transformations        
+        return np.concatenate(image_list[-n_history-1:-1], axis=-1) # need extra dim to apply transformations
+    else:
+        extras = n_history - (len(image_list) - 1)
+        img_blank = np.concatenate([np.zeros_like(image_list[-1])]*extras, axis=-1)        
+        return np.concatenate([img_blank, np.concatenate(image_list[:-1], axis=-1)], axis=-1)
 
 
-def transform_all_in_same_way(inp, type, n_flow):
+def transform_all_in_same_way(inp, type, n_history):
     # inp is a list of all things which go in dict
     out_trans = torch.cat(inp, dim=0)
     # inp_ = torch.stack(inp, dim=0)
     if type == 'train':
         # gaussian blur for img
-        tmp_ = torch.cat([torch.cat([out_trans[0:1]]*3, dim = 0).unsqueeze(0), 
-                            torch.cat([out_trans[1:2]]*3, dim = 0).unsqueeze(0)                            
-                        ], dim = 0)
+        _img = torch.cat([out_trans[0:1].unsqueeze(1)]*3,dim=1)
+        _img_prev = torch.cat([out_trans[1:1+n_history].unsqueeze(1)]*3, dim = 1)
+        _img = _img.type(torch.uint8)
+        _img_prev = _img_prev.type(torch.uint8)
+        _flow_concat = torch.cat([out_trans[n_history+6:n_history+9].unsqueeze(1)]*3, dim = 1)
+        _img_img_prev_flow = torch.cat([_img, _img_prev, _flow_concat], dim = 0)
+        # tmp_ = torch.cat([torch.cat([out_trans[0:1]]*3, dim = 0).unsqueeze(0), 
+        #                     torch.cat([out_trans[1:2]]*3, dim = 0).unsqueeze(0)                            
+        #                 ], dim = 0)
         # tmp_ = torch.cat([out_trans[0:1].unsqueeze(1), out_trans[1:2].unsqueeze(1), out_trans[7:7+n_flow].unsqueeze(1)], dim = 0)
-        tmp_ = transform_image(tmp_) #image transform first two entries only 
-        out_trans[0:1] = tmp_[0,0:1]
-        out_trans[1:2] = tmp_[1,0:1]
+        _transformed_img_img_prev_flow = transform_blur(_img_img_prev_flow) #image transform first two entries only 
+        # extract out current image and previous images
+        _transformed_img_img_prev = _transformed_img_img_prev_flow[0:1+n_history]
+        # apply jitter to images
+
+        _transformed_img_img_prev = transform_jitter(_transformed_img_img_prev)
+
+
+        # update in out_trans
+        out_trans[0:1] = _transformed_img_img_prev[0,0:1]
+        out_trans[1:1+n_history] = _transformed_img_img_prev[1:1+n_history,0]
+        out_trans[n_history+6:n_history+9] = _transformed_img_img_prev_flow[1+n_history:,0]
         # gaussian blur the flow | #? interesting when transform applied to 1 channel vs 3 channels 
-        # ipdb.set_trace()
-        tmp_ = transform_image(out_trans[7:7+n_flow].unsqueeze(1))
-        out_trans[7:7+n_flow] = tmp_.squeeze(1)
+        # tmp_ = transform_image(out_trans[7:7+n_flow].unsqueeze(1))
+        # out_trans[7:7+n_flow] = tmp_.squeeze(1)
 
         out_trans = transform_(out_trans)
+        # ipdb.set_trace()
 
     return out_trans
 
@@ -195,7 +224,7 @@ def get_data_dict_history(n_flow, LIST_OF_DATASETS, PARENT_FOLDER, saved_data_fi
     image_lists, flow_lists, needle_mask_lists, mask_lists, flow_concat_lists = [], [], [], [], []
     all_data_dict = []
     good_pixel_count_lists = []
-    n_history = 1
+    n_history = 3
     count_needles = 0
     count_no_needles = 0
     # max flow and min flow in training data only and use same in test data             
@@ -210,74 +239,65 @@ def get_data_dict_history(n_flow, LIST_OF_DATASETS, PARENT_FOLDER, saved_data_fi
         
         # as flow for 1st frame is zero | first frame outisde while 
         img = get_image(i, dataset_name, PARENT_FOLDER)
-        mask, mask_resized = get_mask(i, dataset_name, PARENT_FOLDER) #Image.open(mask_path)    
-        # ipdb.set_trace()
-        if mask is not None:
-            mask_needle_arr_resized = find_needle_mask(mask)
-            if mask_needle_arr_resized is None: 
-                needle_present = 0 
-                mask_needle_arr_resized = np.zeros((256,256), dtype=np.uint8)
-                count_no_needles += 1
-            else:
-                needle_present = 1
-                count_needles += 1
+        if img is not None:
+            image_list.append(img[:,:,0:1])
+            mask, mask_resized = get_mask(i, dataset_name, PARENT_FOLDER) #Image.open(mask_path)    
+        
+            if mask is not None:
+                mask_needle_arr_resized = find_needle_mask(mask)
+                if mask_needle_arr_resized is None: 
+                    needle_present = 0 
+                    mask_needle_arr_resized = np.zeros((256,256), dtype=np.uint8)
+                    count_no_needles += 1
+                else:
+                    needle_present = 1
+                    count_needles += 1
 
-            cartesian = np.zeros_like(img)
+                cartesian = np.zeros_like(img)
 
-            # # initial flow for frame 1 
-            # flow_ = torch.zeros_like(img)[:,:, 0:1]
-            flow_ = np.zeros_like(img[:,:, 0:1])#[:,:, 0:1]
-            # flow_ = torch.zeros_like(img)[:,:, :]
-            #? may need to change concatenate below to stack 
-            flow_new = flow_ #np.concatenate([flow_]*n_history, axis=-1) #add dim here and then wrap around flow history: n_history x 3 x H x W
-            flow_x = flow_new #torch.cat([flow_]*n_flow, dim = -1)
-            flow_y = flow_new #torch.cat([flow_]*n_flow, dim = -1)
-            flow_list.append(flow_)
-            flow_x_list.append(flow_x)
-            flow_y_list.append(flow_y)
-            
-            if flow_history_flag:
-                all_data_dict.append({'images':img[:,:,0:1],
-                                      'images_prev':torch.zeros_like(img[:,:,0:1]),
-                                    'flows':torch.from_numpy(flow_),
-                                    'needle_masks':mask_needle_arr_resized,
-                                    'masks':mask_resized,
-                                    'flow_concats':torch.from_numpy(flow_new),
-                                    'flow_x':torch.from_numpy(flow_x),
-                                    'flow_y':torch.from_numpy(flow_y),
-                                     'needle_label': torch.tensor([needle_present])
-                                    })  
+                # # initial flow for frame 1 
+                # flow_ = torch.zeros_like(img)[:,:, 0:1]
+                flow_ = np.zeros_like(img[:,:, 0:1])#[:,:, 0:1]
+                # flow_ = torch.zeros_like(img)[:,:, :]
+                #? may need to change concatenate below to stack 
+                flow_new = np.concatenate([flow_]*n_history, axis=-1) #flow_ #np.concatenate([flow_]*n_history, axis=-1) #add dim here and then wrap around flow history: n_history x 3 x H x W
+                flow_x = flow_new #torch.cat([flow_]*n_flow, dim = -1)
+                flow_y = flow_new #torch.cat([flow_]*n_flow, dim = -1)
+                flow_list.append(flow_)
+                flow_x_list.append(flow_x)
+                flow_y_list.append(flow_y)
+                
+                if flow_history_flag:
+                    all_data_dict.append({'images':torch.from_numpy(img[:,:,0:1]),
+                                        'images_prev': torch.from_numpy(np.concatenate([np.zeros_like(img[:,:,0:1])]*n_history, axis=-1)),
+                                        'flows':torch.from_numpy(flow_),
+                                        'needle_masks':np.expand_dims(mask_needle_arr_resized, axis=-1),
+                                        'masks':mask_resized,
+                                        'flow_concats':flow_new,
+                                        'flow_x':flow_x,
+                                        'flow_y':flow_y,
+                                        'needle_label': torch.tensor([needle_present])
+                                        })  
 
-            else:
-                all_data_dict.append({'images':img[:,:,0:1],
-                                    'images_prev':torch.zeros_like(img[:,:,0:1]),
-                                    'flows':flow_, 
-                                    'needle_masks':np.expand_dims(mask_needle_arr_resized, axis=-1),
-                                    'masks':mask_resized,
-                                    'flow_concats':flow_new,
-                                    'flow_x':flow_x,
-                                    'flow_y':flow_y,
-                                    'needle_label': torch.tensor([needle_present])
-                                    })
-                # ipdb.set_trace()
-                # all_data_dict.append({'images':img,
-                #                     'images_prev':torch.zeros_like(img),
-                #                     'flows': flow_, #np.concatenate([flow_]*3, axis = -1), 
-                #                     'needle_masks':np.stack([mask_needle_arr_resized]*3, axis=-1),
-                #                     'masks':mask_resized,
-                #                     'flow_concats':flow_new,
-                #                     'flow_x':flow_x,
-                #                     'flow_y':flow_y
-                #                     })                                    
+                else:
+                    all_data_dict.append({'images':torch.from_numpy(img[:,:,0:1]),
+                                        'images_prev':torch.zeros_like(img[:,:,0:1]),
+                                        'flows':flow_, 
+                                        'needle_masks':np.expand_dims(mask_needle_arr_resized, axis=-1),
+                                        'masks':mask_resized,
+                                        'flow_concats':flow_new,
+                                        'flow_x':flow_x,
+                                        'flow_y':flow_y,
+                                        'needle_label': torch.tensor([needle_present])
+                                        })                    
 
+                # finding number of good pixels
+                # _ , count_ = np.unique(mask_needle_arr_resized, return_counts=True) 
+                # if count_[1] != 0:
+                #     good_pixel_count_list.append(count_[0]/count_[1])
 
-            # finding number of good pixels
-            # _ , count_ = np.unique(mask_needle_arr_resized, return_counts=True) 
-            # if count_[1] != 0:
-            #     good_pixel_count_list.append(count_[0]/count_[1])
-
-        img_H = img.shape[0]
-        img_W = img.shape[1]
+            img_H = img.shape[0]
+            img_W = img.shape[1]
         while os.path.exists(image_path):            
             # print("i = " , i)
             i = i + 1            
@@ -288,6 +308,7 @@ def get_data_dict_history(n_flow, LIST_OF_DATASETS, PARENT_FOLDER, saved_data_fi
             mask, mask_resized = get_mask(i, dataset_name, PARENT_FOLDER) #Image.open(mask_path)            
             # if mask is none then don't append images
             if mask is not None:                
+                image_list.append(img_next[:,:,0:1])
                 mask_needle_arr_resized = find_needle_mask(mask)
                 # if needle mask is none don't append | make mask all zeros
                 if mask_needle_arr_resized is None: 
@@ -300,7 +321,7 @@ def get_data_dict_history(n_flow, LIST_OF_DATASETS, PARENT_FOLDER, saved_data_fi
                     count_needles += 1
                     # ipdb.set_trace()
                     # append image, mask, mask_needle                    
-                    image_list.append(img_next[:,:,0:1])   
+                    # image_list.append(img_next[:,:,0:1])   
                     needle_mask_list.append(mask_needle_arr_resized)
                     mask_list.append(mask)                                              
                     if type == 'train': 
@@ -317,16 +338,20 @@ def get_data_dict_history(n_flow, LIST_OF_DATASETS, PARENT_FOLDER, saved_data_fi
                         flow, flowX, flowY = find_flow_history(image_list, img_H, img_W, n_history, abs_flag = False)
                         flow_list.append(flow)
 
-                        all_data_dict.append({'images':img_next[:,:,0:1],
-                                             'images_prev':img[:,:,0:1],
+                        # include n_history images 
+                        # ipdb.set_trace()
+                        img_prev_ = find_image_history(image_list, n_history)
+
+                        all_data_dict.append({'images':torch.from_numpy(img_next[:,:,0:1]),
+                                             'images_prev':torch.from_numpy(img_prev_), #img[:,:,0:1]
                                             'flows':torch.from_numpy(flow[:,:,-1:]),
-                                            'needle_masks':mask_needle_arr_resized,
+                                            'needle_masks':np.expand_dims(mask_needle_arr_resized, axis=-1),
                                             'masks':mask_resized,
-                                            'flow_concats':torch.from_numpy(flow),
-                                            'flow_x':torch.from_numpy(flowX),
-                                            'flow_y':torch.from_numpy(flowY),
+                                            'flow_concats':flow,
+                                            'flow_x':flowX,
+                                            'flow_y':flowY,
                                              'needle_label': torch.tensor([needle_present])
-                                            })  
+                                            })                          
 
                     else:
                         flow = cv2.calcOpticalFlowFarneback(prvs, next, None, 0.5, levels=3, winsize=15, iterations=3, poly_n=5, poly_sigma=1.2, flags=0)                        
@@ -349,7 +374,7 @@ def get_data_dict_history(n_flow, LIST_OF_DATASETS, PARENT_FOLDER, saved_data_fi
                         tmpX = concatenate_m_flow_frames_np(flow_x_list, n_flow, img_H, img_W)
                         tmpY = concatenate_m_flow_frames_np(flow_y_list, n_flow, img_H, img_W)                                        
                     
-                        all_data_dict.append({'images':img_next[:,:,0:1],
+                        all_data_dict.append({'images':torch.from_numpy(img_next[:,:,0:1]),
                                              'images_prev':img[:,:,0:1],
                                             'flows':cartesian_bgr[:,:,0:1], 
                                             'needle_masks':np.expand_dims(mask_needle_arr_resized, axis=-1),
@@ -373,7 +398,7 @@ def get_data_dict_history(n_flow, LIST_OF_DATASETS, PARENT_FOLDER, saved_data_fi
 
                     ## find max and min flow in x  and y directions for train data only
                     if type == 'train':
-                        max_flow, min_flow = update_max_min_flows(flow, max_flow, min_flow)
+                        max_flow, min_flow = update_max_min_flows(np.concatenate([flowX, flowY], axis=-1), max_flow, min_flow)
                 # update previous image
                 img = img_next
 
@@ -384,17 +409,17 @@ def get_data_dict_history(n_flow, LIST_OF_DATASETS, PARENT_FOLDER, saved_data_fi
     print("min_flow = " , min_flow)
     cartesian = np.zeros_like(img)
     max_flow_ = np.max(max_flow)
+    min_flow_ = np.min(min_flow)
 
     for k, data in enumerate(all_data_dict):
         # NORMALIZING
-        if not flow_history_flag:
-            updated_flow_x = (data['flow_x'] - min_flow[0])/max_flow_ #(max_flow[0] - min_flow[0])
-            updated_flow_y = (data['flow_y'] - min_flow[1])/max_flow_ #(max_flow[1] - min_flow[1])     
-            # print("flow x shape : " , updated_flow_x.shape)   
-            # print("flow y shape : " , updated_flow_y.shape) 
-            range_ = [k-n_flow+1,k+1] if k > n_flow else [0,k+1]  
+        if flow_history_flag:
+            n_flow = n_history
+            updated_flow_x = (data['flow_x']- min_flow_)/max_flow_ #(max_flow[0] - min_flow[0])
+            updated_flow_y = (data['flow_y'] -min_flow_)/max_flow_ #(max_flow[1] - min_flow[1])     
+            
             flow_bgr = []
-            for j in range(n_flow):
+            for j in range(n_history):
                 updated_flow = np.concatenate([updated_flow_x[:,:,j:j+1], updated_flow_y[:,:,j:j+1]], axis=-1)
                 cartesian[..., [0,2]] = cv2.normalize(updated_flow,None, 0, 255, cv2.NORM_MINMAX)
                 cartesian_bgr = cv2.cvtColor(cartesian, cv2.COLOR_HSV2BGR)
@@ -408,12 +433,6 @@ def get_data_dict_history(n_flow, LIST_OF_DATASETS, PARENT_FOLDER, saved_data_fi
             data['flows'] = torch.from_numpy(cartesian_bgr[:,:,0:1]) #cartesian_bgr[:,:,0:1]
             data['flow_concats'] = torch.from_numpy(flow_bgr)
 
-            # print("SHAPES : ")
-            # print(data['flow_x'].shape) 
-            # print(data['flow_y'].shape) 
-            # print(data['flows'].shape) 
-            # print(data['flow_concats'].shape) 
-
         out_transform = transform_all_in_same_way([data['images'].permute(2,0,1),data['images_prev'].permute(2,0,1),data['flows'].permute(2,0,1),
                                 torch.from_numpy(data['needle_masks']).permute(2,0,1),torch.from_numpy(data['masks']).permute(2,0,1), 
                                 data['flow_concats'].permute(2,0,1), data['flow_x'].permute(2,0,1), data['flow_y'].permute(2,0,1)], type, n_flow)
@@ -422,7 +441,12 @@ def get_data_dict_history(n_flow, LIST_OF_DATASETS, PARENT_FOLDER, saved_data_fi
             n_flow = n_history
         # as every input has 3 channels 
         key_list = ['images', 'images_prev','flows','needle_masks','masks','flow_concats','flow_x','flow_y']
-        ind_list = [[0,1],[1,2],[2,3],[3,4],[4,7],[7,7+n_flow],[7+n_flow,7+2*n_flow],[7+2*n_flow,7+3*n_flow]]
+        _history = 1 + n_history
+        _history_v2 = _history + 5
+        ind_list = [[0,1],[1,_history],[_history,_history+1],[_history+1,_history+2],\
+                    [_history+2,_history+5],[_history_v2,_history_v2+n_flow],[_history_v2+n_flow,_history_v2+2*n_flow],\
+                    [_history_v2+2*n_flow,_history_v2+3*n_flow]]
+
         for key,ind in zip(key_list, ind_list):
             data[key] = out_transform[ind[0]:ind[1]]            
 

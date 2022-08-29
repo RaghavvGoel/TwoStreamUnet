@@ -1,12 +1,26 @@
-# folders 
-
+# cache file
 __pycache__
-checkpoints
-data
-images
-runs
-saved_data
 
-# files 
-*.gif
+# tensorboard folders 
+runs
+
+# model weights folder
+checkpoints 
+
+# saved_data folder and data folder 
+saved_data 
+data 
+
+# random files or files used for debugging
+misc.py
+
+# images and videos
 *.png
+*.mp4
+*.flo
+images 
+contour_test
+
+# flow folders for storing images
+comparison_liteflownet
+models

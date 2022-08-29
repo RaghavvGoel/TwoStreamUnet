@@ -4,6 +4,7 @@ import cupy
 import math
 import re
 import torch
+import ipdb
 
 kernel_Correlation_rearrange = '''
     extern "C" __global__ void kernel_Correlation_rearrange(
@@ -281,12 +282,17 @@ class _FunctionCorrelation(torch.autograd.Function):
         rbot0 = one.new_zeros([ one.shape[0], one.shape[2] + (6 * intStride), one.shape[3] + (6 * intStride), one.shape[1] ])
         rbot1 = one.new_zeros([ one.shape[0], one.shape[2] + (6 * intStride), one.shape[3] + (6 * intStride), one.shape[1] ])
 
+        # print("rbot0: \n", rbot0)
+        # print("rbot0 shape : " , rbot0.shape)
+        # print("rbot1: \n", rbot1)
         self.intStride = intStride
 
         one = one.contiguous(); assert(one.is_cuda == True)
         two = two.contiguous(); assert(two.is_cuda == True)
 
         output = one.new_zeros([ one.shape[0], 49, int(math.ceil(one.shape[2] / intStride)), int(math.ceil(one.shape[3] / intStride)) ])
+
+        # ipdb.set_trace()
 
         if one.is_cuda == True:
             n = one.shape[2] * one.shape[3]

@@ -7,6 +7,7 @@ import logging
 import os
 from re import L
 import sys
+from tkinter import FALSE
 
 import cv2
 import numpy as np
@@ -29,6 +30,7 @@ torch.manual_seed(10)
 from utils_two_stream_unet import get_data, get_data_all_dataset, get_dict_vals, get_data_dict, get_data_dict_history
 from torch.utils.data import DataLoader, random_split
 
+tensorboard_flag = True
 ROOT_FOLDER = '/data/raghavvg/NeedleMasks/' #COMMENT THIS IF IF SYSTEM CHANGES
 
 IMAGE_LOC  = 'JPEGImages'
@@ -56,12 +58,6 @@ LIST_OF_DATASETS_TRAIN = [
 
 LIST_OF_DATASETS_TEST = ['task_positives_205-2022_04_21_17_04_12-segmentation mask 1.1',
                     ]
-
-#! command to run for training: (conda activate vision_stuff)
-#! python train_two_stream_unet.py --use_saved_data --saved_data_file 601_dict_normalized_all_positive_nflow=1_gauss_both_needle_label --epochs 150 --batch-size 10 --iter gauss_vanilla_L2_reg_1e-4
-
-# ! command to validate (will be on the video in LIST_OF_DATASETS_TEST)
-
 iter = 16
 dir_checkpoint = os.path.join('checkpoints/exp', str(iter))
 if not os.path.exists(dir_checkpoint):
@@ -78,13 +74,20 @@ def convert_to_uint_and_transpose(img):
 
     return img
 
-def get_weights(named_parameters):
+def get_weights(named_parameters, filter_name=None):
     '''
     return list of params 
+    @param named_parameters: generator object for named parameters
+    @param filter_name: filter name of the unwanted parameters
+
     '''
     weights_list = []
     for name, param in named_parameters:
-        weights_list.append(param)
+        if filter_name is None:
+            weights_list.append(param)
+        else:
+            if filter_name not in name:
+                weights_list.append(param)
     
     return weights_list
 
@@ -117,7 +120,8 @@ def log_tensorboard(writer, global_step, type, true_masks, masks_pred, true_over
         # writer.add_images(type+'_features/temporal_features', temporal_features_.reshape(-1,1,x_spatial_shape[-2],x_spatial_shape[-1]), global_step)
 
 
-def eval_net(net, test_data, n_classes, criterion, constrastive_criterion, device):
+def eval_net(net, test_data, n_classes, criterion, constrastive_criterion=None, device=None,
+                 motion_flag=False, motion_criterion=None):
     '''
     pass data as dictionart and extract here 
     '''
@@ -125,6 +129,7 @@ def eval_net(net, test_data, n_classes, criterion, constrastive_criterion, devic
     n_eval = len(test_data)
     batch_size = 10 #len(images)//4
     epoch_loss = 0
+    motion_loss_list = []
     true_mask_list, pred_mask_list, loss_list, loss_v2_list, true_overlayed_imgs_list, pred_overlayed_imgs_list = [], [], [], [], [], []
     pred_v2_overlayed_imgs_list = []
     spatial_features_list, temporal_features_list = [], []
@@ -136,7 +141,6 @@ def eval_net(net, test_data, n_classes, criterion, constrastive_criterion, devic
         # for i in range(n_eval//batch_size):
         i = 0
         # while i <= (n_eval//batch_size):
-        iou_avg = []
         for i, data in enumerate(test_data):
       
             imgs = data['images'] #images_train[ind_] #batch['image']
@@ -155,8 +159,10 @@ def eval_net(net, test_data, n_classes, criterion, constrastive_criterion, devic
             flows = flows.to(device=device) / 255
             flows_ = flows_.to(device=device, dtype=mask_type)
             needle_labels = needle_labels.to(device=device, dtype = mask_type)
-
-            masks_pred, last_encoded_feature, x_spatial, x_temporal = net(imgs,flows,imgs_prev) # flow in form of image 
+            if motion_flag:
+                masks_pred, x_bottle_neck, x_spatial, x_temporal, pred_feats, label_feats = net(imgs, flows, imgs_prev)
+            else:
+                masks_pred, x_bottle_neck, x_spatial, x_temporal = net(imgs,flows,imgs_prev) # flow in form of image 
             # masks_pred, x_spatial, x_temporal = net(imgs,flows_) # flow in form of x, y matrices
 
             if x_spatial is not None:
@@ -165,25 +171,24 @@ def eval_net(net, test_data, n_classes, criterion, constrastive_criterion, devic
             if x_temporal is not None:
                 x_temporal = x_temporal.to('cpu') 
                 temporal_features_list.append(x_temporal)
-
             loss = criterion(masks_pred, true_masks) # bce with logits already has sigmoid 
             # classification_loss = criterion(needle_classification_logits, needle_labels)
             classification_loss = torch.tensor(0) #constrastive_criterion(x_bottle_neck, needle_labels)
             # loss = sigmoid_focal_loss(masks_pred, true_masks, device)
             masks_pred = torch.sigmoid(masks_pred)
             masks_pred_ = (masks_pred > 0.5).float() # additional filtering ? 
-            
-            #* compute IOU and keep a store
-            iou_avg.append(iou(masks_pred_, true_masks).item())
             # loss_v2 = criterion(masks_pred_, true_masks)
-            
             # epoch_loss += loss.item()
+            if motion_flag:
+                motion_loss = motion_criterion(pred_feats.flatten(), label_feats.flatten())
+                motion_loss_list.append(motion_loss.item())
+
+
             imgs = imgs.to('cpu') #+ 0.5 #, dtype=torch.float32        
             true_masks = true_masks.to('cpu') #, dtype=mask_type)
             flows = flows.to('cpu') #+ 0.5 #, dtype=mask_type)
             masks_pred = masks_pred.to( 'cpu')
             masks_pred_ = masks_pred_.to( 'cpu')
-            last_encoded_feature = last_encoded_feature.to('cpu') # no need to plot in eval
 
             images_list.append(imgs)
             flows_list.append(flows)
@@ -215,17 +220,8 @@ def eval_net(net, test_data, n_classes, criterion, constrastive_criterion, devic
         if len(temporal_features_list) != 0:
             temporal_features_list = torch.concat(temporal_features_list, dim = 0)
 
-        # print("loss: ", epoch_loss, " loss_v2: " , epoch_loss_v2)
-        # print("shapes: ", pred_mask_list.shape)
-
-        # tmp_ = torch.concat([true_mask_list, torch.sigmoid(pred_mask_list) > 0.5])
-        # overlayed_imgs = torch.concat([images[len(true_mask_list),0:1,:,:], tmp_.to('cpu')], dim = 1)
-
-    print("avg iou: ", np.mean(iou_avg))   
-    # written or write random predictions and ground truths 
-    # will help in debug
     return epoch_loss, epoch_classification_loss, true_mask_list, pred_mask_list, true_overlayed_imgs_list, pred_v2_overlayed_imgs_list, images_list \
-            , spatial_features_list, temporal_features_list, flows_list, np.mean(iou_avg)
+            , spatial_features_list, temporal_features_list, flows_list
 
 def find_contours(img, mask, threshold_flag=False):
     if threshold_flag:
@@ -265,26 +261,20 @@ def train_net(net,
               flow_history_flag = False,
               learned_flow = False,
               classification_loss_flag = False,
-              store_weights = False,
+              motion_flag=False
               ):
 
     global dir_checkpoint
 
-    # flow_history_flag = True
     if not use_saved_data:
-        # images_tensor, flows_tensor, needle_masks_tensor, masks_tensor, flow_concats_tensor = get_data(net.temporal_in_channel)
         train_data, max_flow, min_flow = get_data_dict_history(n_flow, LIST_OF_DATASETS_TRAIN, PARENT_FOLDER_TRAIN, saved_data_file,'train',flow_history_flag)
         test_data, _, _ = get_data_dict_history(n_flow, LIST_OF_DATASETS_TEST, PARENT_FOLDER_TEST, saved_data_file,'test', flow_history_flag, max_flow, min_flow)
-        # _data, max_flow, min_flow = get_data_dict_history(n_flow, LIST_OF_DATASETS_TRAIN, PARENT_FOLDER_TRAIN, saved_data_file,'all',flow_history_flag)
-        
-        # train_data =  get_data_all_dataset(net.temporal_in_channel, LIST_OF_DATASETS_TRAIN, PARENT_FOLDER_TRAIN, saved_data_file,'train')
-        # test_data =  get_data_all_dataset(net.temporal_in_channel, LIST_OF_DATASETS_TEST, PARENT_FOLDER_TEST, saved_data_file, 'test')
+
     else:
         train_data = torch.load(os.path.join('saved_data', saved_data_file, 'train.pt')) #torch.load('saved_data/3/train.pt')
         test_data = torch.load(os.path.join('saved_data', saved_data_file, 'test.pt')) #torch.load('saved_data/3/test.pt')
 
-
-    #! Splitting train data into train and test 
+    # Splitting train data into train and test 
     _len_data  = len(train_data)
     train_data, test_data = torch.utils.data.random_split(train_data, [int(0.75*_len_data), _len_data-int(0.75*_len_data)], generator=torch.Generator().manual_seed(42))
     
@@ -296,14 +286,10 @@ def train_net(net,
     if task == 'train':
         dir_checkpoint = os.path.join('checkpoints/exp', str(iter) + '_conv_layers_{}_n_flow_={}'.format(conv_layers,n_flow))
         if not os.path.exists(dir_checkpoint):
-            os.makedirs(dir_checkpoint) 
-    else:
-        dir_checkpoint = os.path.join('checkpoints/exp', str(iter) + '_conv_layers_{}_n_flow_={}'.format(conv_layers,n_flow))
-
+            os.makedirs(dir_checkpoint)    
         
     n_val = len(train_data) #int(len(dataset) * val_percent)
     n_train = len(test_data) #- n_val
-    # train, val = random_split(dataset, [n_train, n_val])
 
     """
     GENERATE DATA W/O WRAPPING IN DATALOADER, CAN'T USE SHUFFLE WITH FLOW or shuffle in batches
@@ -311,13 +297,13 @@ def train_net(net,
     (make a dictionary and wrap dictionay in data loader)
     """
     """PARAMS for LOGGING"""
+
     patience = 5
-    tensorboard_flag = True
     if tensorboard_flag:
         writer = SummaryWriter(comment='LR_{}_BS_{}_patience_{}_nflow_{}_conv_layers_{}_iter_{}'.format(lr, batch_size, patience, n_flow, conv_layers, iter))
     global_step = 0
     eval_step = 50
-    ipdb.set_trace()
+
     if tensorboard_flag:
         logging.info(f'''Starting training:
             Epochs:          {epochs}
@@ -334,42 +320,41 @@ def train_net(net,
         optimizer = optim.AdamW([{'params':get_weights(net.UNet.named_parameters()) + get_weights(net.spatial_conv.named_parameters()) +\
                                      get_weights(net.temporal_conv.named_parameters())}, 
                                     {'params':get_weights(net.flownet.named_parameters()), 'lr':lr*1e-1}], lr=lr, weight_decay=1e-5) #momentum=0.9
+
     else:
-        optimizer = optim.AdamW(net.parameters(), lr=lr, weight_decay=1e-6) #momentum=0.9
-        # optimizer = optim.RMSprop(net.parameters(), lr=lr, weight_decay=1e-5, momentum=0.9)
+        optimizer = optim.AdamW(get_weights(net.named_parameters(), filter_name="motion_net"), lr=lr, weight_decay=1e-6) 
+
+    if motion_flag:
+        motion_optimizer = optim.AdamW([{'params':get_weights(net.UNet.motion_net.named_parameters())}])
+    
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min', patience=patience, factor=0.9)
-    # scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=100)
     
     if n_classes > 1:
         criterion = nn.CrossEntropyLoss()
     else:
-        # criterion = nn.BCEWithLogitsLoss(pos_weight=torch.tensor(100)) #pos_weight=150
         criterion = nn.BCEWithLogitsLoss() 
         constrastive_criterion = ContrastiveLoss()
+    
+    if motion_flag:
+        motion_criterion = nn.MSELoss()
 
     rand_inds = random.sample(range(0, n_val), 20) # sampling 10 random numbers for plotting 
+
+
     ################################ VALIDATION ################################################ 
-    ################################ VALIDATION ################################################ 
-    ################################ VALIDATION ################################################ 
-    weight_type = 'last'
+
     if task == 'val':
-        #? LOAD NETWORK
-        ipdb.set_trace()
-        # only run eval and return | load weights
-        if weight_type == 'best':
-            _tmp = 'CP_best.pth'
-        else:
-            _tmp = 'CP_last.pth' 
-        dir_checkpoint_ = os.path.join('checkpoints', 'exp', iter ,weight_file, _tmp)
+        # only run eval and return | load weights 
+        dir_checkpoint_ = os.path.join('checkpoints', 'exp', weight_file, 'CP_last.pth')
         # dir_checkpoint_ = os.path.join('/home/luyuan/thomaswe/TwoStreamUnet/checkpoints', 'exp', '13', 'CP_best.PTH')
+
         net.load_state_dict(torch.load(dir_checkpoint_))
-        #? LOAD DATA 
-        test_data = torch.load(os.path.join('saved_data', saved_data_file, 'test.pt')) #torch.load('saved_data/3/test.pt')
-        #? RUN TEST
+
         net.eval()
-        val_score, true_masks_test, masks_pred_test, true_overlayed_imgs, pred_overlayed_imgs, imgs_test, spatial_features_test, temporal_features_test, flows_test, iou_avg \
-                        = eval_net(net, test_data, n_classes, criterion, device)
-        print("avg iou score: " , iou_avg)
+
+        val_score, true_masks_test, masks_pred_test, true_overlayed_imgs, pred_overlayed_imgs, imgs_test, spatial_features_test, temporal_features_test, flows_test \
+                        = eval_net(net, test_data, n_classes, criterion, device, motion_flag=motion_flag, motion_criterion=motion_criterion)
+
         if net.n_classes > 1:
             logging.info('Validation cross entropy: {}'.format(val_score))
             writer.add_scalar('Loss/test', val_score, global_step)
@@ -377,46 +362,35 @@ def train_net(net,
             logging.info('Validation Loss Coeff: {}'.format(val_score))
             writer.add_scalar('Loss/test', val_score, global_step)
 
-        #? LOG TENSORBOARD 
-        rand_inds = random.sample(range(0, n_val), 40) # choose any random image at each logging 
-        log_tensorboard(writer, global_step, 'test', true_masks_test, masks_pred_test, true_overlayed_imgs, pred_overlayed_imgs, imgs_test, flows_test,
-                        spatial_features_test, temporal_features_test, x_spatial_shape, rand_inds)                     
-
         # find contours of predictions and ground truths and push on tensorboard
-        # for i in range(len(imgs_test)):
-        #     pred_tmp = convert_to_uint_and_transpose(masks_pred_test[i])
-        #     pred_tmp_ = convert_to_uint_and_transpose((masks_pred_test[i] > 0.5).float())
-        #     img_tmp = convert_to_uint_and_transpose(imgs_test[i])
-        #     true_mask_tmp = convert_to_uint_and_transpose(true_masks_test[i])
-        #     img_overlayed_pred = find_contours(img_tmp, pred_tmp)  # cna also inp color
-        #     img_overlayed_pred_ = find_contours(img_tmp, pred_tmp_)  # cna also inp color
-        #     img_overlayed_true = find_contours(img_tmp, true_mask_tmp)  # cna also inp color
+        for i in range(len(imgs_test)):
+            pred_tmp = convert_to_uint_and_transpose(masks_pred_test[i])
+            pred_tmp_ = convert_to_uint_and_transpose((masks_pred_test[i] > 0.5).float())
+            img_tmp = convert_to_uint_and_transpose(imgs_test[i])
+            true_mask_tmp = convert_to_uint_and_transpose(true_masks_test[i])
+            img_overlayed_pred = find_contours(img_tmp, pred_tmp)  # cna also inp color
+            img_overlayed_pred_ = find_contours(img_tmp, pred_tmp_)  # cna also inp color
+            img_overlayed_true = find_contours(img_tmp, true_mask_tmp)  # cna also inp color
 
-        #     # ipdb.set_trace()
-        #     if i%10 == 0:
-        #         writer.add_images('test/images', imgs_test[i:i+1], i)
-        #         writer.add_images('test/mask_true', true_masks_test[i:i+1], i)
-        #         writer.add_images('test/mask_pred', masks_pred_test[i:i+1], i)
-        #         writer.add_images('test/mask_pred_sigmoid', masks_pred_test[i:i+1] > 0.5, i)
-        #         writer.add_images('test/true_overlayed',np.expand_dims(img_overlayed_true.transpose(2,0,1), axis=0), i)
-        #         # writer.add_images('test/true_overlayed', true_overlayed_imgs_, i)
-        #         writer.add_images('test/pred_overlayed', np.expand_dims(img_overlayed_pred.transpose(2,0,1), axis=0), i)            
-        #         writer.add_images('test/pred_overlayed_v2', np.expand_dims(img_overlayed_pred_.transpose(2,0,1), axis=0), i)            
-            # writer.add_images('test/pred_overlayed', pred_overlayed_imgs_, i)            
+            if i%10 == 0:
+                writer.add_images('test/images', imgs_test[i:i+1], i)
+                writer.add_images('test/mask_true', true_masks_test[i:i+1], i)
+                writer.add_images('test/mask_pred', masks_pred_test[i:i+1], i)
+                writer.add_images('test/mask_pred_sigmoid', masks_pred_test[i:i+1] > 0.5, i)
+                writer.add_images('test/true_overlayed',np.expand_dims(img_overlayed_true.transpose(2,0,1), axis=0), i)
+                writer.add_images('test/pred_overlayed', np.expand_dims(img_overlayed_pred.transpose(2,0,1), axis=0), i)            
+                writer.add_images('test/pred_overlayed_v2', np.expand_dims(img_overlayed_pred_.transpose(2,0,1), axis=0), i)            
         
         print("done evaluation ")
         writer.close()
         return 
-    ################################  ################################################ 
-    ################################  ################################################ 
-    ################################  ################################################ 
 
     min_val_score = 1000 # some large number
     for epoch in range(epochs):
         net.train()
-
         epoch_loss = []        
-        epoch_classification_loss = []        
+        epoch_classification_loss = []
+        epoch_motion_loss = []        
         with tqdm(total=n_train, desc=f'Epoch {epoch + 1}/{epochs}', unit='img') as pbar:
             for i,data in enumerate(train_data):
                 imgs = data['images'] #images_train[ind_] #batch['image']
@@ -428,105 +402,79 @@ def train_net(net,
                 flows_ = torch.cat([flowsX, flowsY], dim=1)
                 needle_labels = data['needle_label']
 
-                # ipdb.set_trace()
                 imgs = imgs.to(device=device)
-                # print("img max = " , torch.max(imgs))
                 imgs_prev = imgs_prev.to(device=device)
                 mask_type = torch.float32 if n_classes == 1 else torch.long
                 true_masks = true_masks.to(device=device, dtype=mask_type)
                 flows = flows.to(device=device)/255 
                 flows_ = flows_.to(device=device, dtype=mask_type)
                 needle_labels = needle_labels.to(device=device, dtype=mask_type)
-                # ipdb.set_trace()
-                masks_pred, last_encoded_feature, x_spatial, x_temporal = net(imgs,flows,imgs_prev) # flow in form of image 
-                # masks_pred, x_spatial, x_temporal = net(imgs,flows_) # flow in form of x, y matrices
-                # ipdb.set_trace()
+                if motion_flag:
+                    masks_pred, x_bottle_neck, x_spatial, x_temporal, pred_feats, label_feats = net(imgs, flows, imgs_prev)
+                else:
+                    masks_pred, x_bottle_neck, x_spatial, x_temporal = net(imgs,flows,imgs_prev) # flow in form of image 
+
                 loss =  criterion(masks_pred, true_masks)
+            
                 classification_loss = torch.tensor(0)#constrastive_criterion(x_bottle_neck, needle_labels)
-                # loss = sigmoid_focal_loss(masks_pred, true_masks, device)
-                            
+
+                if motion_flag:
+                    motion_loss = motion_criterion(pred_feats.flatten(), label_feats.flatten())
+                    epoch_motion_loss.append(motion_loss.item())
+
                 epoch_loss.append(loss.item())
                 epoch_classification_loss.append(classification_loss.item())
 
-                if classification_loss_flag:
-                    #? backprop classification_logitsagate only classification loss 
+                if tensorboard_flag:
+                    writer.add_scalar('Loss/train', loss.item(), global_step)
                     writer.add_scalar('ClassificationLoss/train', classification_loss.item(), global_step)
 
-                    pbar.set_postfix(**{'classification loss (batch)': classification_loss.item(), 'lr':optimizer.param_groups[0]['lr']})
+                pbar.set_postfix(**{'loss(batch)': loss.item(), 'classification_loss(batch)': classification_loss.item(), 'lr':optimizer.param_groups[0]['lr']})
 
-                    optimizer.zero_grad()
-                    classification_loss.backward()
-                    loss = loss.detach()
-                    # nn.utils.clip_grad_value_(net.parameters(), 0.1) ## increasead from 0.1 to 0.5 BE MIndFUL OF this 
-                    optimizer.step()
-                    #? have a stop condition, based on the validation 
+                optimizer.zero_grad()
+                if motion_flag:
+                    motion_optimizer.zero_grad()
 
-                else:
-                    if tensorboard_flag:
-                        writer.add_scalar('Loss/train', loss.item(), global_step)
-                        # writer.add_scalar('ClassificationLoss/train', classification_loss.item(), global_step)
+                (loss).backward(retain_graph=True)
+                if motion_flag:
+                    motion_loss.backward()
 
-                    pbar.set_postfix(**{'loss(batch)': loss.item(), 'classification_loss(batch)': classification_loss.item(), 'lr':optimizer.param_groups[0]['lr']})
+                optimizer.step()
+                if motion_flag:
+                    motion_optimizer.step()
 
-                    optimizer.zero_grad()
-                    (loss + classification_loss).backward()
-                    # nn.utils.clip_grad_value_(net.parameters(), 0.1) ## increasead from 0.1 to 0.5 BE MIndFUL OF this 
-                    optimizer.step()
-                # ipdb.set_trace()
                 pbar.update(imgs.shape[0])
                 global_step += 1
-                # if global_step % (n_train // (10 * batch_size)) == 0:
                 if global_step % eval_step == 0:
-                #     for tag, value in net.named_parameters():
-                #         tag = tag.replace('.', '/')                                                
-                #         if value == None or value.grad == None:                            
-                #             pass
-                #         else:
-                #             writer.add_histogram('weights/' + tag, value.data.cpu().numpy(), global_step)
-                #             writer.add_histogram('grads/' + tag, value.grad.data.cpu().numpy(), global_step)                    
                     
                     net.eval()
-                    # ipdb.set_trace()
-                    val_score, val_classification_score ,true_masks_test, masks_pred_test, true_overlayed_imgs, pred_overlayed_imgs, imgs_test, spatial_features_test, temporal_features_test, flows_test, iou_avg \
-                                    = eval_net(net, test_data, n_classes, criterion, constrastive_criterion, device)
+                    val_score, val_classification_score ,true_masks_test, masks_pred_test, true_overlayed_imgs, pred_overlayed_imgs, imgs_test, spatial_features_test, temporal_features_test, flows_test \
+                                    = eval_net(net, test_data, n_classes, criterion, device=device, motion_flag=motion_flag, motion_criterion=motion_criterion)
                     if classification_loss_flag:
                         if val_classification_score < min_val_score:
-                            # min_val_score = val_score
                             torch.save(net.state_dict(), os.path.join(dir_checkpoint, 'CP_classification_best.pth')) 
                         
                         scheduler.step(val_classification_score)
                         #? if val_score not decreasing continuously for past 5 iterations then switch 
-                        # if optimizer.param_groups[0]['lr'] < lr:
                         if epoch >= 0:
                             print("switching to training segmentation as well")
-                            # value increased for some steps switch to joint learning
                             classification_loss_flag = False    
-                            #! can load best weighs here    
-                            # net.load_state_dict(os.path.join(dir_checkpoint, 'CP_classification_best.pth')) 
                         net.train()               
                         logging.info('Validation Loss: {}'.format(val_classification_score))
                     else:
                         if val_score < min_val_score:
                             min_val_score = val_score
-                            if store_weights:
-                                torch.save(net.state_dict(), os.path.join(dir_checkpoint, 'CP_best.pth'))
+                            torch.save(net.state_dict(), os.path.join(dir_checkpoint, 'CP_best.pth'))
                         scheduler.step(val_score)                        
                         
                         net.train()
                         logging.info('Validation Loss: {}'.format(val_score))
-                    #! make a function for logger class 
                     writer.add_scalar('learning_rate', optimizer.param_groups[0]['lr'], global_step)
                     test_iou = iou(masks_pred_test, true_masks_test)
                     writer.add_scalar('IOU/test', test_iou, global_step)
-
-                    
                     writer.add_scalar('Loss/test', val_score, global_step)
                     writer.add_scalar('ClassificationLoss/test', val_classification_score, global_step)
-
                     writer.add_images('train/images', imgs, global_step)
-                    writer.add_images('train/image_last_layer', imgs[0:1], global_step)
-                    # writer.add_images('train/flows', torch.concat([flows[:,-1:,:,:]]*3, dim=1), global_step)
-                    # ipdb.set_trace()
                     writer.add_images('train/flows', flows[:,0:1,:,:], global_step)
                     if flow_history_flag:
                         writer.add_images('train/flows_hist', flows[:,1:2,:,:], global_step)
@@ -534,54 +482,37 @@ def train_net(net,
                         writer.add_images('train/mask_true', true_masks, global_step)
                         masks_pred_sigmoid = torch.sigmoid(masks_pred) # don't know why we were passing via sigmoid 
                         masks_pred_ = (masks_pred_sigmoid > 0.5).float()
-                        # writer.add_images('train/mask_pred_sigmoid', masks_pred > 0.5, global_step)
-                        # ipdb.set_trace()
                         if x_spatial is not None:
                             x_spatial = x_spatial.unsqueeze(2)
                             x_spatial_shape = x_spatial.shape
-                            # writer.add_images('train_features/spatial_features', x_spatial.reshape(-1,1,x_spatial_shape[-2],x_spatial_shape[-1]), global_step)
                         if x_temporal is not None:
                             x_temporal = x_temporal.unsqueeze(2)
-                            # writer.add_images('train_features/temporal_features', x_temporal.reshape(-1,1,x_spatial_shape[-2],x_spatial_shape[-1]), global_step)
-                        writer.add_images('train/last_encoded_feature', last_encoded_feature[0].reshape(-1,1,64,64), global_step)
                         writer.add_images('train/mask_pred_', masks_pred_, global_step)
-                        # writer.add_images('train/mask_pred', masks_pred, global_step)
                         writer.add_images('train/mask_pred_sigmoid', masks_pred_sigmoid, global_step)
                         writer.add_images('train/true_overlayed' ,torch.concat([imgs, 0.5*(imgs + true_masks), imgs], dim = 1), global_step)
                         writer.add_images('train/pred_overlayed' ,torch.concat([imgs, 0.5*(imgs + masks_pred_), imgs], dim = 1), global_step)
-                        # COMPUTE IOU | copy in test section below as well
-                        # ipdb.set_trace()
+
                         train_iou = iou(masks_pred_, true_masks)
                         writer.add_scalar('IOU/train', train_iou, global_step)
-                        writer.add_scalar('IOU/test_avg', iou_avg, global_step)
 
-                        #? log test 
-                        # ipdb.set_trace()
                         rand_inds = random.sample(range(0, n_val), 20) # choose any random image at each logging 
                         log_tensorboard(writer, global_step, 'test', true_masks_test, masks_pred_test, true_overlayed_imgs, pred_overlayed_imgs, imgs_test, flows_test,
                                         spatial_features_test, temporal_features_test, x_spatial_shape, rand_inds)                     
 
-            # log epoch_loss
-            # ipdb.set_trace()
             print("epoch loss : ", np.mean(epoch_loss))
             writer.add_scalar('Loss/Epoch_train', np.mean(epoch_loss), epoch)
+            if motion_flag:
+                writer.add_scalar('MotionLoss/Epoch_train', np.mean(epoch_motion_loss), epoch)
         if save_cp:
             try:
-                # os.mkdir(dir_checkpoint)
                 os.makedirs(dir_checkpoint)
                 logging.info('Created checkpoint directory')
             except OSError:
                 pass
-            # torch.save(net.state_dict(),
-            #            dir_checkpoint + 'CP_epoch{}.pth'.format(epoch+1))
-            # logging.info(f'Checkpoint {epoch + 1} saved !')
-
-            # save last and best epoch based on eval loss 
-            if store_weights:
-                if classification_loss_flag:
-                    torch.save(net.state_dict(), os.path.join(dir_checkpoint, 'CP_classification_last.pth'))
-                else:
-                    torch.save(net.state_dict(), os.path.join(dir_checkpoint, 'CP_last.pth'))
+            if classification_loss_flag:
+                torch.save(net.state_dict(), os.path.join(dir_checkpoint, 'CP_classification_last.pth'))
+            else:
+                torch.save(net.state_dict(), os.path.join(dir_checkpoint, 'CP_last.pth'))
 
     writer.close()
 
@@ -623,22 +554,23 @@ def get_args():
                         help='Downscaling factor of the images')
     parser.add_argument('-v', '--validation', dest='val', type=float, default=10.0,
                         help='Percent of the data that is used as validation (0-100)')
-    parser.add_argument('--use_saved_data', action='store_true' ,default=False,help='using saved data')
+    parser.add_argument('--use_saved_data', action='store_true' ,default=False)
     parser.add_argument('--task', type=str, default = 'train')
     parser.add_argument('--saved_data_file', type=str, default='4')
-    parser.add_argument('--iter', type=str, default='0', help='sets the tensorbaord and weight name as well')
+    parser.add_argument('--iter', type=str, default='0')
     parser.add_argument('--val_weights', type=str, default='0')
-    parser.add_argument('--pure_images', action='store_true', default=False, help='to use only images and no flow')
+    parser.add_argument('--pure_images', action='store_true', default=False)
     parser.add_argument('--n_flow', type=int, default=1)
     parser.add_argument('--conv_layers', type=int, default=1)
     parser.add_argument('--multi_attn', type=int, default=0)
-    parser.add_argument('--flow_history_flag', action='store_true', default=False, help='using past flows')
-    parser.add_argument('--learned_flow', action='store_true', default=False, help='using learning based flow')
-    parser.add_argument('--late_fusion', action='store_true', default=False, help='fusing flow and image feature maps at bottleneck layer')
-    parser.add_argument('--classification_flag', action='store_true', default=False, help='adding classification loss: needle present or not')
-    parser.add_argument('--attention_flag', action='store_true', default=False, help='using attention based UNet')
-    parser.add_argument('--store_weights', action='store_true', default = False, help='make true when weights need to be saved')
-    # parser.add_argument('--tensorboard', action='store_true', default = False, help='logging on tensorboard')    
+    parser.add_argument('--flow_history_flag', action='store_true', default=False)
+    parser.add_argument('--learned_flow', action='store_true', default=False)
+    parser.add_argument('--late_fusion', action='store_true', default=False)
+    parser.add_argument('--classification_flag', action='store_true', default=False)
+    parser.add_argument('--attention_flag', action='store_true', default=False)
+    parser.add_argument('--motion_flag', type=bool, default=False)
+    # parser.add_argument('--scale', type = int, default=1)
+    # parser.add_argument('--log', action='store_true', default=False)
 
     return parser.parse_args()
 
@@ -663,18 +595,13 @@ if __name__ == '__main__':
                             n_classes=1, pure_images_flag=args.pure_images, 
                             conv_flag=args.conv_layers, learned_flow=args.learned_flow,
                             classification_flag = args.classification_flag, attention_flag=args.attention_flag, multi_attn=args.multi_attn,
-                            device = device
+                            device = device, motion_flag=args.motion_flag
                             )
         # freeze flownet parameters
         # ipdb.set_trace()
         # for tag, value in net.named_parameters():
         #     print("tag = " , tag , "  " , value.requires_grad)
 
-    # else:
-    #     scale = 1 # this is for late fusion network
-    #     net = TwoStreamUNetLateFusion(spatial_in_channel=1, temporal_in_channel=scale*args.n_flow, out_channel=16,
-    #                         n_classes=1, pure_images_flag=args.pure_images, conv_flag=args.conv_layers, bilinear=False)
-    
     # print("net = \n ", net)
     # logging.info(f'Network:\n'
     #              f'\t{net.out_channel} input channels\n'
@@ -712,8 +639,8 @@ if __name__ == '__main__':
                 conv_layers = args.conv_layers,
                 flow_history_flag = args.flow_history_flag,
                 learned_flow=args.learned_flow,
-                classification_loss_flag=args.classification_flag,
-                store_weights = args.store_weights,
+                classification_loss_flag=args.classification_flag, 
+                motion_flag=args.motion_flag
                 )
     except KeyboardInterrupt:
         # torch.save(net.state_dict(), 'INTERRUPTED.pth')
