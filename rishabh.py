@@ -20,7 +20,7 @@ def _threshold(x, threshold=None):
         return x
 
 
-def iou(pr, gt, eps=1e-7, threshold=None, ignore_channels=None):
+def iou(pr, gt, eps=float(1e-7), kalman_flag= False, eval = False, threshold=None, ignore_channels=None):
     """Calculate Intersection over Union between ground truth and prediction
     Args:
         pr (torch.Tensor): predicted tensor
@@ -37,20 +37,116 @@ def iou(pr, gt, eps=1e-7, threshold=None, ignore_channels=None):
 
     #intersection = torch.sum(gt * pr)
     #union = torch.sum(gt) + torch.sum(pr) - intersection + eps
+    iou = torch.tensor(0.).to('cuda')
+    intersection_sum = torch.tensor(0.).to('cuda')
+    tp_by_all_positive = torch.tensor(0.).to('cuda')
+    batch = pr.shape[0]
+    num_channels = pr.shape[-3] # this will be consistent irrespective of image/video    
+    if kalman_flag:
+        for i in range(num_channels):
+            gt_sum = gt.sum(dim=[-2, -1])
+            pr_sum = pr.sum(dim=[-2, -1])
+            inds = gt_sum.nonzero()
+            if len(inds) > 0:
+                gt = gt[inds[:, 0], inds[:, 1],: , :, :]
+                pr = pr[inds[:, 0], inds[:, 1],: , :, :]
+                intersection = torch.sum(gt * pr, dim=[-2, -1])
+                union = torch.sum(gt, dim=[-2, -1]) + torch.sum(pr, dim=[-2, -1]) - intersection                
+                iou_channel = torch.mean((intersection) / (union + eps))
+                tp_by_all_positive += torch.mean(intersection / torch.sum(gt, dim=[-2, -1]))
+                iou += iou_channel
+                intersection_sum += torch.mean(intersection)
 
-    num_channels = pr.shape[1]
-
-    iou = 0
-    for i in range(num_channels):
-        intersection_channel = torch.sum(gt[:,i,:,:] * pr[:,i,:,:])
-        union_channel = torch.sum(gt[:,i,:,:]) + torch.sum(pr[:,i,:,:]) - intersection_channel + eps
-        iou_channel = (intersection_channel + eps)/ union_channel
-        iou += iou_channel
+            elif eval:
+                # print("GT has no needle and PR also has no needle")
+                return None, None, None
+    else:    
+        for i in range(num_channels):
+            gt_sum = gt.sum(dim=[-2, -1])
+            inds = gt_sum.nonzero()
+            if len(inds) > 0:
+                gt = gt[inds[:, 0],: , :, :]
+                pr = pr[inds[:, 0],: , :, :]
+                intersection = torch.sum(gt * pr, dim=[-2, -1])
+                union = torch.sum(gt, dim=[-2, -1]) + torch.sum(pr, dim=[-2, -1]) - intersection            
+                iou_channel = torch.mean((intersection) / (union + eps))
+                iou += iou_channel
+                intersection_sum += torch.mean(intersection)
+        # iou = iou / batch # need to divide by batches 
     
-    return iou/num_channels
+    return iou/num_channels, tp_by_all_positive, intersection_sum
+        # num_channels = pr.shape[2]
+        # for i in range(num_channels):
+        #     import ipdb; ipdb.set_trace()
+        #     intersection_channel = torch.sum(pr[:, :, i]*gt[:,:,i], dim=[-2,-1])
+        #     union_channel = torch.sum(gt[: , :, i], dim=[-2, -1]) + torch.sum(pr[:,:,i], dim=[-2, -1]) - intersection_channel + eps
+        #     iou_channel = (intersection_channel)/ union_channel
+        #     iou_channel = torch.mean(iou_channel)
+        #     iou += iou_channel
 
 
 jaccard = iou
+
+
+def dice_score(pr, gt, eps=float(1e-7), kalman_flag= False, eval=False, threshold=None, ignore_channels=None):
+    """Calculate Dice Score
+    Args:
+        pr (torch.Tensor): predicted tensor
+        gt (torch.Tensor):  ground truth tensor
+        eps (float): epsilon to avoid zero division
+        threshold: threshold for outputs binarization
+    Returns:
+        float: dice_score
+    """
+
+    pr = _threshold(pr, threshold=threshold)
+    pr, gt = _take_channels(pr, gt, ignore_channels=ignore_channels)
+
+
+    #intersection = torch.sum(gt * pr)
+    #union = torch.sum(gt) + torch.sum(pr) - intersection + eps
+    dsc = torch.tensor(0.).to('cuda')
+    intersection_sum = torch.tensor(0.).to('cuda')
+    tp_by_all_positive = torch.tensor(0.).to('cuda')
+    batch = pr.shape[0]
+    num_channels = pr.shape[-3] # this will be consistent irrespective of image/video    
+    if kalman_flag:
+        for i in range(num_channels):
+            gt_sum = gt.sum(dim=[-2, -1])
+            pr_sum = pr.sum(dim=[-2,-1])
+            inds = gt_sum.nonzero()
+            if len(inds) > 0:
+                gt = gt[inds[:, 0], inds[:, 1],: , :, :]
+                pr = pr[inds[:, 0], inds[:, 1],: , :, :]
+                intersection = torch.sum(gt * pr, dim=[-2, -1])
+                union = torch.sum(gt, dim=[-2, -1]) + torch.sum(pr, dim=[-2, -1])              
+                dice_channel = torch.mean(2*(intersection) / (union + eps))
+                tp_by_all_positive += torch.mean(intersection / torch.sum(gt, dim=[-2, -1]))
+                dsc += dice_channel
+                intersection_sum += torch.mean(intersection)
+            elif eval: # and len(pr_sum.nonzero()) == 0:
+                # print("no prediction made, don't count")
+                return None 
+
+    else:    
+        for i in range(num_channels):
+            gt_sum = gt.sum(dim=[-2, -1])
+            pr_sum = pr.sum(dim=[-2,-1])
+            inds = gt_sum.nonzero()
+            if len(inds) > 0:
+                gt = gt[inds[:, 0],: , :, :]
+                pr = pr[inds[:, 0],: , :, :]
+                intersection = torch.sum(gt * pr, dim=[-2, -1])
+                union = torch.sum(gt, dim=[-2, -1]) + torch.sum(pr, dim=[-2, -1])             
+                dice_channel = torch.mean(2*(intersection) / (union + eps))
+                dsc += dice_channel
+                intersection_sum += torch.mean(intersection)
+            elif eval: #and len(pr_sum.nonzero()) == 0:
+                # print("no prediction made, don't count")
+                return None
+        # dsc = dsc / batch # need to divide by batches 
+    
+    return dsc/num_channels
 
 
 def f_score(pr, gt, beta=1, eps=1e-7, threshold=None, ignore_channels=None):
@@ -344,8 +440,6 @@ def SSIM(img1, img2,weights ,val_range=2,sigma=1.5, window_size=15, window=None,
         ssim_score[:,i,:,:]=ssim_score[:,i,:,:]*weights[i]
     return(ssim_score.mean())
 
-
-
 def accuracy(pr, gt, threshold=0.5, ignore_channels=None):
     """Calculate accuracy score between ground truth and prediction
     Args:
@@ -362,7 +456,6 @@ def accuracy(pr, gt, threshold=0.5, ignore_channels=None):
     tp = torch.sum(gt == pr, dtype=pr.dtype)
     score = tp / gt.view(-1).shape[0]
     return score
-
 
 def precision(pr, gt, eps=1e-7, threshold=None, ignore_channels=None):
     """Calculate precision score between ground truth and prediction
@@ -385,7 +478,6 @@ def precision(pr, gt, eps=1e-7, threshold=None, ignore_channels=None):
 
     return score
 
-
 def recall(pr, gt, eps=1e-7, threshold=None, ignore_channels=None):
     """Calculate Recall between ground truth and prediction
     Args:
@@ -406,3 +498,50 @@ def recall(pr, gt, eps=1e-7, threshold=None, ignore_channels=None):
     score = (tp + eps) / (tp + fn + eps)
 
     return score
+
+
+def precision_recall(pr, gt, eps=float(1e-7), eval = False, threshold = None, ignore_channels=None, kalman_flag=False):
+    '''
+    The better written variant of precision_recall function
+    @brief Calculates recall and precision pixelwise 
+    @param gt: ground truth
+    @param pr: predicted mask
+
+    @return: recall = tp/(tp+fn), precision = tp/(tp+fp)
+    '''
+
+    pr = _threshold(pr, threshold=threshold)
+    pr, gt = _take_channels(pr, gt, ignore_channels=ignore_channels)
+
+    precision = torch.tensor(0.).to('cuda')
+    recall = torch.tensor(0.).to('cuda')
+
+    # Remove all the zero ground truth entries
+    if kalman_flag:
+        gt_sum = gt.sum(dim=[-2, -1])
+        pr_sum = pr.sum(dim=[-2,-1])
+        inds = gt_sum.nonzero()
+        if len(inds) > 0:
+            gt = gt[inds[:, 0], inds[:, 1],: , :, :]
+            pr = pr[inds[:, 0], inds[:, 1],: , :, :]  
+        elif eval: #and len(pr_sum.nonzero()) == 0:
+            return None, None      
+
+    else:
+        gt_sum = gt.sum(dim=[-2, -1])
+        pr_sum = pr.sum(dim=[-2,-1])
+        inds = gt_sum.nonzero()
+        if len(inds) > 0:
+            gt = gt[inds[:, 0],: , :, :]
+            pr = pr[inds[:, 0],: , :, :]
+        elif eval: #and len(pr_sum.nonzero()) == 0:
+            return None, None
+
+    
+    tp = torch.sum(gt * pr, dim=[-2, -1])
+    fp = torch.sum(pr, dim=[-2, -1]) - tp
+    fn = torch.sum(gt, dim=[-2, -1]) - tp
+    precision = torch.mean((tp ) / (tp + fp + eps))
+    recall = torch.mean((tp ) / (tp + fn + eps))
+
+    return precision, recall
