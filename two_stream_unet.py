@@ -15,7 +15,7 @@ import ipdb
 # from LiteFlowNet import Network, backwarp #! dont call this copy the network
 # torch.manual_seed(10)
 # torch.manual_seed(42)
-torch.manual_seed(42)
+torch.manual_seed(101)
 
 torch.backends.cudnn.enabled = True # make sure to use cudnn for computational performance
 
@@ -414,23 +414,27 @@ class Up(nn.Module):
             else:
                 self.conv = DoubleConv(in_channels, out_channels, in_channels // 2)
 
-    def forward(self, x1, x2):
+    def forward(self, x1, x2, high_res_flag=False):
 
         if not self.attention_flag:
-            x1 = self.up(x1)
-            # input is CHW
-            diffY = x2.size()[2] - x1.size()[2]
-            diffX = x2.size()[3] - x1.size()[3]
 
-            #! add non-zero padding 
-            # x1 = F.pad(x1, [diffX // 2, diffX - diffX // 2,
-            #                 diffY // 2, diffY - diffY // 2])
-            x1 = F.pad(x1, [diffX - diffX // 2, diffX // 2,
-                            diffY - diffY // 2, diffY // 2])                            
-            # if you have padding issues, see
-            # https://github.com/HaiyongJiang/U-Net-Pytorch-Unstructured-Buggy/commit/0e854509c2cea854e247a9c615f175f76fbb2e3a
-            # https://github.com/xiaopeng-liao/Pytorch-UNet/commit/8ebac70e633bac59fc22bb5195e513d5832fb3bd
-            x = torch.cat([x2, x1], dim=1)
+            if high_res_flag:
+                x = torch.cat([x2, x1], dim=1)
+            else:
+                x1 = self.up(x1)
+                # input is CHW
+                diffY = x2.size()[2] - x1.size()[2]
+                diffX = x2.size()[3] - x1.size()[3]
+
+                #! add non-zero padding 
+                # x1 = F.pad(x1, [diffX // 2, diffX - diffX // 2,
+                #                 diffY // 2, diffY - diffY // 2])
+                x1 = F.pad(x1, [diffX - diffX // 2, diffX // 2,
+                                diffY - diffY // 2, diffY // 2])                            
+                # if you have padding issues, see
+                # https://github.com/HaiyongJiang/U-Net-Pytorch-Unstructured-Buggy/commit/0e854509c2cea854e247a9c615f175f76fbb2e3a
+                # https://github.com/xiaopeng-liao/Pytorch-UNet/commit/8ebac70e633bac59fc22bb5195e513d5832fb3bd
+                x = torch.cat([x2, x1], dim=1)
 
         else:
             x = x1
@@ -500,10 +504,6 @@ class UNet(nn.Module):
             classification_flag : when true will also compute classification/contrastive loss by taking the last feature of encoder and passing to linear layer
             attention_flag : if true will use attention gates when upsampling in decoder 
     '''
-    # def __init__(self, n_channels, n_classes, n_depth=4, bilinear=False, conv_layers=1,
-    #                      classification_flag=False, attention_flag=False, multi_attn=0 ,
-    #                      device = 'cuda', motion_flag=False):
-
     def __init__(self, args, **kwargs):
 
         super(UNet, self).__init__()
@@ -528,10 +528,10 @@ class UNet(nn.Module):
         self.down1 = Down(features[0], features[1], self.conv_layers)
         self.down2 = Down(features[1], features[2], self.conv_layers)
         self.down3 = Down(features[2], features[3], self.conv_layers)
-        # self.down4 = Down(features[3], features[4], self.conv_layers)#extra
+        self.down4 = Down(features[3], features[4], self.conv_layers)#extra
         factor = 2 if self.bilinear else 1
 
-        # self.up1 = Up(features[4], features[3] // factor, self.bilinear, self.conv_layers)#extra
+        self.up1 = Up(features[4], features[3] // factor, self.bilinear, self.conv_layers)#extra
         self.up2 = Up(features[3], features[2] // factor, self.bilinear, self.conv_layers)
         self.up3 = Up(features[2], features[1] // factor, self.bilinear, self.conv_layers)
         self.up4 = Up(features[1], features[0], self.bilinear, self.conv_layers)
@@ -567,7 +567,7 @@ class UNet(nn.Module):
 
         self.outc = OutConv(features[0], self.n_classes)
 
-    def forward(self, x, batch_size=10, new_video_flag=False):
+    def forward(self, x, batch_size=10, new_video_flag=False, gauss_flag=False):
         '''
             x can contain multiple inputs from previous time-steps concatenated along batch so that 
             feature extraction can be done in parallel 
@@ -579,7 +579,7 @@ class UNet(nn.Module):
         x2 = self.down1(x1)
         x3 = self.down2(x2)
         x4 = self.down3(x3)   
-        # x5 = self.down4(x4)
+        x5 = self.down4(x4)
 
         if self.attention_flag:
             # this will work for single image, need to change for multiple images as first attention mask would be different
@@ -651,7 +651,7 @@ class UNet(nn.Module):
                 y = self.up4(att_self3 * x1, None)
 
         else:
-            y = x4 #self.up1(x5, x4)
+            y = self.up1(x5, x4)
             y = self.up2(y, x3)        
             y = self.up3(y, x2)
             y = self.up4(y, x1)
@@ -661,12 +661,12 @@ class UNet(nn.Module):
 
         logits = self.outc(y)
 
-        return logits, None #needle_classfication_logits
+        return logits, None, None
 
 
 class UNetBKF(nn.Module):
     '''
-
+        UNet for ConvKalman 
     '''
     def __init__(self, args, **kwargs):
         super(UNetBKF, self).__init__()
@@ -681,6 +681,9 @@ class UNetBKF(nn.Module):
         self.attention_flag = args.attention_flag
         self.multi_attn = args.multi_attn
         self.conv_layers = args.conv_layers
+        self.gauss_flag = args.gauss_flag
+        self.transformer_flag = args.transformer_flag
+        self.high_res_flag = args.high_res_flag
 
 
         feature_size = kwargs['unet_channel_start']
@@ -703,15 +706,22 @@ class UNetBKF(nn.Module):
         #? final layer 
         self.outc = OutConv(features[0], self.n_classes)        
         if args.eval == True:
-            self.kalman_model = KalmanNetConvVal(self.device, self.batch_size, kwargs['in_channels'], kwargs['height'], kwargs['width'], embed_channels=kwargs['kf_channels'])
-            # self.kalman_model = LSTMModelEval(self.device, self.batch_size, kwargs['in_channels'], kwargs['height'], kwargs['width'])
+            if self.gauss_flag:
+                self.kalman_model = KalmanNetConvGaussVal(self.device, self.batch_size, kwargs['in_channels'], kwargs['height'], kwargs['width'], embed_channels=kwargs['kf_channels'])
+            else:
+                self.kalman_model = KalmanNetConvVal(self.device, self.batch_size, kwargs['in_channels'], kwargs['height'], kwargs['width'], embed_channels=kwargs['kf_channels'])
+                # self.kalman_model = LSTMModelEval(self.device, self.batch_size, kwargs['in_channels'], kwargs['height'], kwargs['width'])
             print("Running Evaluation Model")
         else:
-            # self.kalman_model = LSTMModel(self.device, self.batch_size, kwargs['in_channels'], kwargs['height'], kwargs['width'])
-            self.kalman_model = KalmanNetConv(self.device, self.batch_size, kwargs['in_channels'], kwargs['height'], kwargs['width'], embed_channels=kwargs['kf_channels'])
+            if self.gauss_flag:
+                self.kalman_model = KalmanNetConvGauss(self.device, self.batch_size, kwargs['in_channels'], kwargs['height'], kwargs['width'], embed_channels=kwargs['kf_channels'])
+            else:
+                self.kalman_model = KalmanNetConv(self.device, self.batch_size, kwargs['in_channels'], kwargs['height'], \
+                                                kwargs['width'], embed_channels=kwargs['kf_channels'], transformer_flag=self.transformer_flag, high_res_flag = self.high_res_flag)
+                # self.kalman_model = LSTMModel(self.device, self.batch_size, kwargs['in_channels'], kwargs['height'], kwargs['width'])
 
 
-    def forward(self, x, new_video_flag=False, batch_size=10):
+    def forward(self, x, new_video_flag=False, gauss_flag=False, batch_size=10):
         '''
             x can contain multiple inputs from previous time-steps concatenated along batch so that 
             feature extraction can be done in parallel 
@@ -730,20 +740,87 @@ class UNetBKF(nn.Module):
         BT, C_, H_, W_ = x4.shape
         
         x4 = x4.view(B, T, C_, H_, W_)
-        x4 = self.kalman_model(x4, new_video_flag=new_video_flag)    
-        x4 = x4.view(B*T, C_, H_, W_)
 
-        y = self.up2(x4, x3)        
-        y = self.up3(y, x2)
-        y = self.up4(y, x1)
+        if self.gauss_flag:
+            #* original + gauss 
+            x4, x4_sigma = self.kalman_model(x4, new_video_flag=new_video_flag)
+            x4 = x4.view(B*T, C_, H_, W_)
+            x4_sigma = x4_sigma.view(B*T, C_, H_, W_)
 
-        # for plotting 
-        last_encoder_feature = None#nn.Upsample(size=(64,64), mode='bilinear')(x4)
+            # concat x4, x4_sigma along batch as 
+            x4_new = torch.cat([x4, x4_sigma], dim=0)
+
+            y = self.up2(x4_new, torch.cat([x3, x3], dim=0))
+            y = self.up3(y, torch.cat([x2, x2], dim=0))
+            y = self.up4(y, torch.cat([x1, x1], dim=0))
+
+            # y_mean, y_logstd = y[:B*T], y[B*T,:]
+            # y_std = torch.exp(y_logstd)
+            # y_sample = y_mean + y_std*torch.randn(B*T, C_, H_, W_)
+
+            # find logits using y_sample
+            logits = self.outc(y)
+            logits_mean, logits_logstd = logits[:B*T], logits[B*T:]
+            logits_std = torch.exp(logits_logstd)
+            logits_std = logits_std.view(B, T, C, H, W)
+            logits_mean = logits_mean.view(B, T, C, H, W)
+            logits_sample = logits_mean + logits_std*torch.randn(B, T, C, H, W, device = self.device)            
+            
+            return logits_sample, logits_mean, logits_std
+
+        else:
+            #* original 
+            x4 = self.kalman_model(x4, new_video_flag=new_video_flag)
+            
+            if self.high_res_flag:
+                x4 = x4.view(B*T, C_//2, 2*H_, 2*W_)
+            else:
+                x4 = x4.view(B*T, C_, H_, W_)
+
+            y = self.up2(x4, x3, high_res_flag=self.high_res_flag)
+            y = self.up3(y, x2)
+            y = self.up4(y, x1)
+
+            # for plotting 
+            last_encoder_feature = None #nn.Upsample(size=(64,64), mode='bilinear')(x4)
+
+            logits = self.outc(y)
+            logits = logits.view(B, T, C, H, W)
+
+            return logits, None, None
+
+    def forward_process_model(self, x, batch_size = 10, new_video_flag=False, gauss_flag=False):
+        '''
+        input: single image frame 
+        output: generate new state by forward propagation through process model only
+        output propagated through decoder block
+        '''
+        # reshape input to B*T x C x H x W 
+        B, T, C, H, W = x.shape #T = 1
+        x = x.view(-1, C, H, W)
+        
+        x1 = self.inc(x)
+        x2 = self.down1(x1)
+        x3 = self.down2(x2)
+        x4 = self.down3(x3)   
+        
+        BT, C_, H_, W_ = x4.shape
+        
+        #x4_list seq_len x 1 x C_ x H_ x W_
+        x4_list = self.kalman_model.process_model(x4, new_video_flag=new_video_flag)
+    
+        # x4 = x4_list.view(B*T, C_, H_, W_)
+        B_ = x4_list.shape[0]
+
+        y = self.up2(x4_list, torch.cat([x3]*B_, dim=0))        
+        y = self.up3(y, torch.cat([x2]*B_, dim=0))
+        y = self.up4(y, torch.cat([x1]*B_, dim=0))
 
         logits = self.outc(y)
-        logits = logits.view(B, T, C, H, W)
+        _, C_, H_, W_ = logits.shape
+        logits = logits.view(B_, 1, C_, H_, W_)
 
-        return logits, last_encoder_feature
+        return logits, None, None
 
 class TwoStreamUNet(nn.Module):
     '''
@@ -770,6 +847,7 @@ class TwoStreamUNet(nn.Module):
         self.batch_size = args.batch_size
         self.kalman_flag = args.kalman_flag
         self.flow_flag = args.flow_flag
+        self.process_model_flag = args.process_model_flag
         
         self.n_classes = kwargs['n_classes']
         self.spatial_in_channel = kwargs['spatial_in_channel']
@@ -841,6 +919,7 @@ class TwoStreamUNet(nn.Module):
             image = x_spatial + x_temporal #torch.cat([x_spatial, x_temporal], dim=1)
 
         else:
+            # kalman_flag, attention_flag, 
             batch_size = image.shape[0]
             flow=None
             x_spatial = torch.zeros(10,32,128,128)
@@ -851,18 +930,20 @@ class TwoStreamUNet(nn.Module):
                 h, w = image_prev.shape[-2], image_prev.shape[-1]
                 _image_prev = image_prev.view(batch_size*channels, 1, h, w).type(torch.float32)
                 flow = flow.view(batch_size*channels, 1, h, w).type(torch.float32)
-
                 image = torch.cat([image.type(torch.float32), flow], dim=0) # concatenate along batch 
 
             elif image_prev is not None:
                 image = torch.cat([image, image_prev], dim=-3)
             else:
                 image = image
-
-        logits, last_encoded_feature = self.UNet(image, batch_size=batch_size, new_video_flag=new_video_flag)
         
-        return logits, last_encoded_feature, x_spatial, x_temporal, flow
-
+        if self.kalman_flag and self.process_model_flag:
+            logits, mean, sigma = self.UNet.forward_process_model(image, batch_size=batch_size, new_video_flag=new_video_flag)
+        else:
+            logits, mean, sigma = self.UNet(image, batch_size=batch_size, new_video_flag=new_video_flag)
+        
+        return logits, mean, sigma, flow
+        
 
 # class TwoStreamUNetLateFusion(nn.Module):
 #     '''
