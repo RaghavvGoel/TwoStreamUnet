@@ -10,6 +10,8 @@ checkpoints
 # saved_data folder and data folder 
 saved_data 
 data 
+DAVIS_2017
+new_dataset
 
 # random files or files used for debugging
 misc.py

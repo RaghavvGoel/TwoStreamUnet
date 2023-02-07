@@ -8,7 +8,7 @@ import os
 from re import L
 import sys
 from types import new_class
-
+from math import pi
 import cv2
 import numpy as np
 import torch
@@ -19,6 +19,7 @@ import ipdb
 import torch.nn.functional as F
 import random
 from tensorboardX import SummaryWriter
+# from TwoStreamUnet.eval_two_stream_unet import LIST_OF_DATASETS_TEST
 
 # from eval import eval_net
 from two_stream_unet import TwoStreamUNet, ContrastiveLoss
@@ -74,53 +75,157 @@ def log_tensorboard(writer, global_step, type, true_masks, masks_pred, true_over
     #     pass
     #     # temporal_features_ = temporal_features[rand_inds].unsqueeze(2)
     #     # writer.add_images(type+'_features/temporal_features', temporal_features_.reshape(-1,1,x_spatial_shape[-2],x_spatial_shape[-1]), global_step)
-
 def check_folder_exists(folder):
 
     if not os.path.exists(folder):
         os.mkdir(folder)
 
-def eval_net(writer, global_step, net, test_data, n_classes, criterion, constrastive_criterion, kalman_flag, device, args):
+def eval_net_stacked(writer, global_step, net, test_data, n_classes, criterion, device, args):
     '''
     #! EVALUATE
     '''
     # images, flows, needle_masks, masks, flow_concats  = get_dict_vals(data)
     n_eval = len(test_data)    
-    epoch_loss = 0
-    true_mask_list, pred_mask_list, loss_list = [], [], []
-    true_overlayed_imgs_list, pred_overlayed_imgs_list, true_pred_overlayed_imgs_list = [], [], []
-    images_list = []
-    flows_list = []
-    iou_list, dsc_list, precision_list, recall_list = [], [], [], []        
+    
+    kalman_flag = args.kalman_flag
 
-    dir_name = os.path.join('icra_results','stacked_unet')
-    dir_us_img = os.path.join(dir_name, 'us_img')
-    check_folder_exists(dir_us_img)
-    dir_us_img_pred_overlayed = os.path.join(dir_name, 'us_img_pred_overlayed')
-    check_folder_exists(dir_us_img_pred_overlayed)
-    dir_us_img_true_mask_overlayed = os.path.join(dir_name, 'us_img_pred_true_overlayed')
-    check_folder_exists(dir_us_img_true_mask_overlayed)
+    # dir_name = os.path.join('icra_results','UNET_stacked')
+    dir_name = os.path.join('ThesisResults','Stacked_seed42')
+    check_folder_exists(dir_name)
+    # dir_us_img = os.path.join(dir_name, 'us_img')
+    # check_folder_exists(dir_us_img)
+    # dir_us_img_pred_overlayed = os.path.join(dir_name, 'us_img_pred_overlayed')
+    # check_folder_exists(dir_us_img_pred_overlayed)
+    # dir_us_img_true_mask_overlayed = os.path.join(dir_name, 'us_img_pred_true_overlayed')
+    # check_folder_exists(dir_us_img_true_mask_overlayed)
+    dir_us_img_pred_mask = os.path.join(dir_name, 'us_img_pred_mask')
+    check_folder_exists(dir_us_img_pred_mask)
 
     with torch.no_grad():
         step = 0
-        # ipdb.set_trace()
+        ipdb.set_trace()
         for j, data in enumerate(test_data):
             # import ipdb; ipdb.set_trace()
             print("j=",j)
-            new_video_flag = True
-            for i in range(len(data['images'])):            
-                # print("i= ", i)                
-                mask_type = torch.float32 #if n_classes == 1 else torch.long                
-                imgs = data['images'][i] 
-                true_masks = data['needle_masks'][i] 
-                if kalman_flag:
-                    flows = None 
-                    imgs_prev = None 
+            mask_type = torch.float32 #if n_classes == 1 else torch.long                
+            imgs = data['images'] 
+            true_masks = data['needle_masks'] 
+            if kalman_flag:
+                flows = None 
+                imgs_prev = None 
+                imgs = imgs.to(device=device, dtype=mask_type).unsqueeze(0).unsqueeze(0)
+                true_masks = true_masks.to(device=device, dtype=mask_type).unsqueeze(0).unsqueeze(0)
+                flows = None 
+                imgs_prev = None 
+            elif args.flow_flag:
+                imgs_prev = data['images_prev']
+                flows = data['flow_concats']                     
+                imgs_prev = imgs_prev.to(device=device)
+                flows = flows.to(device=device, dtype=mask_type).unsqueeze(0) / 255                    
+                imgs = imgs.to(device=device, dtype=mask_type).unsqueeze(0).unsqueeze(0)
+                true_masks = true_masks.to(device=device, dtype=mask_type).unsqueeze(0).unsqueeze(0)
+            else:
+                flows = None #data['flow_concats']                      
+                if args.n_flow > 1:
+                    imgs_prev = data['images_prev']
+                    imgs_prev = imgs_prev.to(device=device, dtype=mask_type).unsqueeze(0)
+                    imgs = imgs.to(device=device, dtype=mask_type).unsqueeze(0)
+                    true_masks = true_masks.to(device=device, dtype=mask_type).unsqueeze(0)
+                else:
+                    imgs_prev = None #data['images_prev']
+                    imgs = imgs.to(device=device, dtype=mask_type).unsqueeze(0)
+                    true_masks = true_masks.to(device=device, dtype=mask_type).unsqueeze(0)
+                
+            new_video_flag = False 
+            masks_pred, _, _, _ = net(imgs, flow=flows, image_prev=imgs_prev, new_video_flag=new_video_flag)            
 
+            masks_pred = torch.sigmoid(masks_pred)
+            masks_pred_threshold = (masks_pred > 0.5).float() 
+            step += 1
+
+            imgs = imgs.to('cpu') 
+            true_masks = true_masks.to('cpu') 
+
+            masks_pred = masks_pred.to( 'cpu')
+            masks_pred_threshold = masks_pred_threshold.to( 'cpu')                
+
+            # ipdb.set_trace()
+            # plot and write using cv2.imwrite            
+            if kalman_flag:
+                us_img, masks_pred_threshold, true_masks = imgs[0][0][0], masks_pred_threshold[0][0][0], true_masks[0][0][0]
+            else:
+                us_img, masks_pred_threshold, true_masks = imgs[0][0], masks_pred_threshold[0][0], true_masks[0][0]
+
+            us_img = us_img.numpy()
+            us_img = np.stack([us_img]*3, axis=-1)*255
+            masks_pred_, true_masks_, zero_mask = np.zeros_like(us_img), np.zeros_like(us_img), np.zeros_like(us_img)
+            masks_pred_[:,:,2] = masks_pred_threshold.numpy()*255
+            true_masks_[:,:,2] = true_masks.numpy()*255                
+
+            alpha = 0.5
+            us_img_pred_overlayed = cv2.addWeighted(us_img, 1-alpha, masks_pred_, alpha,0.0)
+            us_img_true_overlayed = cv2.addWeighted(us_img, 1-alpha, true_masks_, alpha,0.0)
+            us_img_ = cv2.addWeighted(us_img, 1-alpha, zero_mask, alpha, 0.0)
+            # alpha = 0.4
+            # gt_mask_pred_mask_overlayed = cv2.addWeighted(true_masks_, 1-alpha, masks_pred_, alpha, 0.0)
+
+            # cv2.imwrite(os.path.join(dir_us_img,'frame_' + '000{}'.format(step).zfill(6) + '.png'), us_img)
+            # desired_steps = [773,774,776, 777, 778, 779]
+            # desired_steps = [73, 767]
+            if step: #in desired_steps:
+                # print("here")
+                # cv2.imwrite(os.path.join(dir_us_img,'us_img_' + '000{}'.format(step).zfill(6) + '.png'), us_img_)
+                # cv2.imwrite(os.path.join(dir_us_img_true_mask_overlayed,'true_overlayed_v2_' + '000{}'.format(step).zfill(6) + '.png'), us_img_true_overlayed)
+                # cv2.imwrite(os.path.join(dir_us_img_pred_overlayed,'frame_' + '000{}'.format(step).zfill(6) + '.png'), us_img_pred_overlayed)                    
+                cv2.imwrite(os.path.join(dir_us_img_pred_mask,'pred_mask_' + '000{}'.format(step).zfill(6) + '.png'), masks_pred_[:,:,2])
+
+
+def eval_net(writer, global_step, net, test_data, n_classes, criterion, device, args):
+    '''
+    #! EVALUATE
+    '''
+    kalman_flag = args.kalman_flag
+    # images, flows, needle_masks, masks, flow_concats  = get_dict_vals(data)
+    # n_eval = len(test_data)
+    
+    dir_name = os.path.join('ThesisResults','VanillaUNet_v2_seed101')
+    check_folder_exists(dir_name)
+    # dir_us_img = os.path.join(dir_name, 'us_img')
+    # check_folder_exists(dir_us_img)
+    # dir_us_img_pred_overlayed = os.path.join(dir_name, 'us_img_pred_overlayed')
+    # check_folder_exists(dir_us_img_pred_overlayed)
+    # dir_us_img_true_mask_overlayed = os.path.join(dir_name, 'us_img_pred_true_overlayed')
+    # check_folder_exists(dir_us_img_true_mask_overlayed)
+    # dir_us_img_true_mask = os.path.join(dir_name, 'us_img_true_mask')
+    # check_folder_exists(dir_us_img_true_mask)
+    dir_us_img_pred_mask = os.path.join(dir_name, 'us_img_pred_mask')
+    check_folder_exists(dir_us_img_pred_mask)
+
+    if args.process_model_flag:
+        # make a new dir for process model plots
+        dir_us_img_process_model = os.path.join(dir_name, 'process_model_no_threshold')
+        check_folder_exists(dir_us_img_process_model)
+
+    with torch.no_grad():
+        step = 0
+        new_video_flag = True
+        for j, data in enumerate(test_data):
+            # import ipdb; ipdb.set_trace()
+            print("j=",j)
+            for i in range(len(data['images'])):
+                print("i= ", i)
+                mask_type = torch.float32 #if n_classes == 1 else torch.long                
+                imgs = data['images'][i]
+                true_masks = data['needle_masks'][i]
+                if kalman_flag:
                     imgs = imgs.to(device=device, dtype=mask_type).unsqueeze(0).unsqueeze(0)
                     true_masks = true_masks.to(device=device, dtype=mask_type).unsqueeze(0).unsqueeze(0)
                     flows = None 
-                    imgs_prev = None 
+                    imgs_prev = None
+                    if args.vector_flag:
+                        needle_params = data['needle_params'][i] #x_start, y_start, needle_angle, needle_length, x_tip, y_tip
+                        needle_params = needle_params.to(device=device, dtype=mask_type)
+                        true_masks_new = data['needle_masks_new'][i]
                 elif args.flow_flag:
                     imgs_prev = data['images_prev']
                     flows = data['flow_concats']                     
@@ -139,11 +244,9 @@ def eval_net(writer, global_step, net, test_data, n_classes, criterion, constras
                         imgs_prev = None #data['images_prev']
                         imgs = imgs.to(device=device, dtype=mask_type).unsqueeze(0)
                         true_masks = true_masks.to(device=device, dtype=mask_type).unsqueeze(0)
-                    
-                    # ipdb.set_trace()
-                    
-                
-                masks_pred, last_encoded_feature, _, _, _ = net(imgs, flow=flows, image_prev=imgs_prev, new_video_flag=new_video_flag)
+
+                masks_pred, _, _, _ = net(imgs, flow=flows, image_prev=imgs_prev, new_video_flag=new_video_flag)
+
                 new_video_flag = False
                 # below is false for lstm + unet 
                 if kalman_flag:
@@ -151,23 +254,50 @@ def eval_net(writer, global_step, net, test_data, n_classes, criterion, constras
                         new_video_flag = True
                 # masks_pred, x_spatial, x_temporal = net(imgs,flows_) # flow in form of x, y matrices
 
-                loss = criterion(masks_pred, true_masks) # bce with logits already has sigmoid 
+                # loss = criterion(masks_pred, true_masks) # bce with logits already has sigmoid 
                 # loss = sigmoid_focal_loss(masks_pred, true_masks, device)
-                masks_pred = torch.sigmoid(masks_pred)
-                masks_pred_threshold = (masks_pred > 0.5).float() # additional filtering ? 
+                if not args.vector_flag:
+                    masks_pred = torch.sigmoid(masks_pred)
+                    masks_pred_threshold = (masks_pred > 0.5).float() # 
+                    masks_pred = masks_pred.to( 'cpu')
+                    masks_pred_threshold = masks_pred_threshold.to( 'cpu')                
                 
                 imgs = imgs.to('cpu') 
                 true_masks = true_masks.to('cpu') 
 
-                masks_pred = masks_pred.to( 'cpu')
-                masks_pred_threshold = masks_pred_threshold.to( 'cpu')                
                         
                 step += 1
 
                 # plot and write using cv2.imwrite
-                # ipdb.set_trace()
                 if kalman_flag:
-                    us_img, masks_pred_threshold, true_masks = imgs[0][0][0], masks_pred_threshold[0][0][0], true_masks[0][0][0]
+                    if args.process_model_flag:
+                        masks_pred_threshold_list = masks_pred[:,0,0].numpy()
+                        # us_img, masks_pred_threshold, true_masks = imgs[0][0][0], masks_pred_threshold[:,0,0], true_masks[0][0][0]
+
+                    if args.vector_flag:
+                        # make gt mask and prediction using needle params and mask_pred
+                        us_img = imgs[0][0][0]
+                        H, W = us_img.shape[-2], us_img.shape[-1]
+                        masks_pred_threshold, true_masks = np.zeros((H, W, 3), dtype=np.uint8), np.zeros((H, W, 3), dtype=np.uint8)
+                        # convert to np and use cv2 line
+                        needle_params = needle_params.cpu().numpy()
+                        needle_params = needle_params.astype(np.uint8)
+                        true_masks = cv2.line(true_masks, (needle_params[1], needle_params[0]), (needle_params[5],needle_params[4]), (255,255,255), 5)
+                        
+                        scale_needle_param = torch.tensor([256, 256, (2*pi), 256]).to(device)
+                        masks_pred = masks_pred[:4]*scale_needle_param
+                        masks_pred = masks_pred.cpu().numpy()
+                        masks_pred = masks_pred[:,0]
+                        x_tip = masks_pred[0] + np.cos(masks_pred[2])*masks_pred[3]
+                        y_tip = masks_pred[1] + np.sin(masks_pred[2])*masks_pred[3]
+                        masks_pred_threshold = cv2.line(masks_pred_threshold, (int(round(masks_pred[1])), int(round(masks_pred[0]))), (int(round(y_tip)), int(round(x_tip))), (255,255,255), 5)
+
+                        true_masks = torch.from_numpy(true_masks) #.permute(2,0,1)
+                        masks_pred_threshold = torch.from_numpy(masks_pred_threshold)#.permute(2,0,1)
+                        true_masks, masks_pred_threshold = true_masks[:,:,0]/255, masks_pred_threshold[:,:,0]/255
+                    else:
+                        us_img, masks_pred_threshold, true_masks = imgs[0][0][0], masks_pred_threshold[0][0][0], true_masks[0][0][0]
+
                 else:
                     us_img, masks_pred_threshold, true_masks = imgs[0][0], masks_pred_threshold[0][0], true_masks[0][0]
 
@@ -186,18 +316,27 @@ def eval_net(writer, global_step, net, test_data, n_classes, criterion, constras
 
                 # cv2.imwrite(os.path.join(dir_us_img,'frame_' + '000{}'.format(step).zfill(6) + '.png'), us_img)
                 # desired_steps = [773,774,776, 777, 778, 779]
-                desired_steps = [73, 767]
-                if step in desired_steps:
+                # desired_steps = [73, 767]
+                # ipdb.set_trace()
+                if step: #in desired_steps:
                     # print("here")
-                    cv2.imwrite(os.path.join(dir_us_img,'us_img_' + '000{}'.format(step).zfill(6) + '.png'), us_img_)
-                    cv2.imwrite(os.path.join(dir_us_img_true_mask_overlayed,'true_overlayed_v2_' + '000{}'.format(step).zfill(6) + '.png'), us_img_true_overlayed)
-                    cv2.imwrite(os.path.join(dir_us_img_pred_overlayed,'frame_' + '000{}'.format(step).zfill(6) + '.png'), us_img_pred_overlayed)                    
+                    # cv2.imwrite(os.path.join(dir_us_img,'us_img_' + '000{}'.format(step).zfill(6) + '.png'), us_img_)
+                    # cv2.imwrite(os.path.join(dir_us_img_true_mask_overlayed,'true_overlayed_' + '000{}'.format(step).zfill(6) + '.png'), us_img_true_overlayed)
+                    # cv2.imwrite(os.path.join(dir_us_img_pred_overlayed,'frame_' + '000{}'.format(step).zfill(6) + '.png'), us_img_pred_overlayed)                    
+                    # cv2.imwrite(os.path.join(dir_us_img_true_mask,'true_mask_' + '000{}'.format(step).zfill(6) + '.png'), true_masks_[:,:,2])
+                    cv2.imwrite(os.path.join(dir_us_img_pred_mask,'pred_mask_' + '000{}'.format(step).zfill(6) + '.png'), masks_pred_[:,:,2])
+
+                    #write process model images 
+                    if args.process_model_flag:
+                        for kk in range(masks_pred_threshold_list.shape[0]):
+                            img_process_model = np.stack([masks_pred_threshold_list[kk]]*3, axis=-1)*255
+                            cv2.imwrite(os.path.join(dir_us_img_process_model,'process_model_' + '000{}'.format(step).zfill(6) + '_' + str(kk) + '.png'), img_process_model)
                     
                     # cv2.imwrite(os.path.join(dir_name,'attention_unet_overlayed_' + '000{}'.format(step).zfill(6) + '.png'), us_img_pred_overlayed)
                 # if step == 779:
-                #     break    
+                #     break
                     # ipdb.set_trace()
-                    
+
             # if j >= 0:
             #     break
     
@@ -240,6 +379,13 @@ def get_args():
     parser.add_argument('--eval' , action='store_true', default=True, help='Run Validation for video')
     parser.add_argument('--flow_flag', action='store_true', default = False, help='make true when optical flow')
     parser.add_argument('--traj_len', type=int, default=10, help='trajectory length after which kalman re-initialized')
+    parser.add_argument('--data_type', type=str, default='DARPA', help='type of data choose from [DARPA, UPMC, BlueGel]')
+    parser.add_argument('--process_model_flag', action='store_true', default=False, help='generate next state purely using process model')
+    parser.add_argument('--gauss_flag', action='store_true', default=False, help='flag for using gaussian distribution inside Kalman')
+    parser.add_argument('--transformer_flag', action='store_true', default=False, help='flag for using tranformer for kalman gain')
+    parser.add_argument('--high_res_flag', action='store_true', default=False, help='generate next state using just process model')
+    parser.add_argument('--vector_flag', action='store_true', default=False, help='generate next state using just process model')
+
 
     return parser.parse_args()
 
@@ -248,20 +394,21 @@ if __name__ == '__main__':
     # logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s')
     args = get_args()
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    
+
     #* GENERATE DATA
-    PARENT_FOLDER_TEST = 'new_dataset/test' #os.path.join(ROOT_FOLDER, 'data/test')
-    LIST_OF_DATASETS_TEST = [
-                         'task_positives_93-2022_04_12_18_28_39-segmentation mask 1.1',                        
-                         'task_negatives_204-2022_04_08_16_58_31-segmentation mask 1.1',
-                         'task_positives_67-2022_04_18_19_11_58-segmentation mask 1.1'
-                            ]   
+
+    PARENT_FOLDER_TRAIN, LIST_OF_DATASETS_TRAIN, PARENT_FOLDER_TEST, LIST_OF_DATASETS_TEST, IMAGE_LOC, MASK_LOC = get_list_train_test_data(args.data_type)    
     if not args.use_saved_data:
         # test_data = get_data_dict_kalman(LIST_OF_DATASETS_TEST, PARENT_FOLDER_TEST, args.saved_data_file, 'test', traj_len = 50)
-        if args.flow_flag:
-            test_data = get_data_dict_history(1, LIST_OF_DATASETS_TEST, PARENT_FOLDER_TEST, args.saved_data_file, type='test', flow_flag=args.flow_flag)
+        if args.flow_flag or args.n_flow > 1:
+            # test_data = get_data_dict_history(args.n_flow, LIST_OF_DATASETS_TEST, PARENT_FOLDER_TEST, args.saved_data_file, type='test', flow_flag=args.flow_flag, flow_history_flag=args.flow_history_flag)
+            test_data = get_data_dict_history(args.n_flow, PARENT_FOLDER_TEST, LIST_OF_DATASETS_TEST, IMAGE_LOC, MASK_LOC, args.saved_data_file,'test', args.data_type, flow_flag=args.flow_flag, flow_history_flag=args.flow_history_flag)
         else:
-            test_data = get_data_dict_kalman_eval(LIST_OF_DATASETS_TEST, PARENT_FOLDER_TEST, args.saved_data_file)
+            if args.vector_flag:
+                test_data = get_data_dict_kalman_vec(PARENT_FOLDER_TEST, LIST_OF_DATASETS_TEST, IMAGE_LOC, MASK_LOC, args.saved_data_file, type='test', traj_len=args.traj_len, data_type=args.data_type,repeat_flag=False)
+            else:
+                test_data = get_data_dict_kalman(PARENT_FOLDER_TEST, LIST_OF_DATASETS_TEST, IMAGE_LOC, MASK_LOC, args.saved_data_file, type='test', traj_len=args.traj_len, data_type=args.data_type)
+
     else:
         test_data = torch.load(os.path.join('saved_data', args.saved_data_file, 'test.pt')) #torch.load('saved_data/3/test.pt')
     
@@ -281,26 +428,28 @@ if __name__ == '__main__':
     # list_of_weights = [
                         # 'VanillaUnet_start_channel_64_Abl_conv_layers_1_nflow_1',
                         # 'VanillaUnet_start_channel_64_seed_42_Abl_conv_layers_1_nflow_1',
-                    #    'VanillaUnet_start_channel_64_seed_101_Abl_conv_layers_1_nflow_1'
-                    # ]
+                        # 'VanillaUnet_start_channel_64_seed_101_Abl_conv_layers_1_nflow_1'
+                        # ]
     # list_of_weights = ['FlowUnetOG_start_channel_64_seed_10_Abl_conv_layers_1_nflow_1',
     #                    'FlowUnetOG_start_channel_64_seed_42_Abl_conv_layers_1_nflow_1',
     #                    'FlowUnetOG_start_channel_64_seed_101_Abl_conv_layers_1_nflow_1'
     #                   ]
-    # list_of_weights = ['LSTMUnet_start_channel_64_seed_42_Abl_conv_layers_1_nflow_1']
-    # list_of_weights = ['ConvkalmanNet_Unet_start_channel_64_kf_64_seed_42_Abl_conv_layers_1_nflow_1']
+    # list_of_weights = ['LSTMUnet_start_channel_64_Abl_conv_layers_1_nflow_1']
+    # list_of_weights = ['ConvkalmanNet_Unet_start_channel_64_kf_32_seed_101_Abl_conv_layers_1_nflow_1']
     # list_of_weights = ['FlowUnetOG_start_channel_64_seed_42_Abl_conv_layers_1_nflow_1']
-    # list_of_weights = ['VanillaUnetOG_start_channel_64_seed_10_Abl_conv_layers_2_nflow_1']
-    # list_of_weights = ['AttentionUnetOG_start_channel_64_seed_42_Abl_conv_layers_2_nflow_1']
-    list_of_weights = ['StackedUnet_unetstart_64_seed_42_conv_layers_1_nflow_4']
+    list_of_weights = ['VanillaUnet_start_channel_64_seed_101_Abl_conv_layers_1_nflow_1']
+    # list_of_weights = ['AttentionUnetOG_start_channel_64_seed_10_Abl_conv_layers_2_nflow_1']
+    # list_of_weights = ['StackedUnet_unetstart_64_seed_42_conv_layers_1_nflow_4']
+    # list_of_weights = ['ConvKalmanVec_UNet_BlueGel_unetstart_64_kf_32_seed_42_conv_layers_1_nflow_1']
 
     for weight in list_of_weights:
-        # dir_checkpoint = os.path.join('checkpoints/exp', weight,'CP_best_val_score.pth')
-        dir_checkpoint = os.path.join('checkpoints/exp', weight,'CP_best_iou.pth')
+        # dir_checkpoint = os.path.join('checkpoints/exp', weight,'CP_300.pth')
+        # dir_checkpoint = os.path.join('checkpoints/exp', weight,'CP_best_iou.pth')
+        dir_checkpoint = os.path.join('checkpoints/exp', weight,'CP_best_val_score.pth')
+        # dir_checkpoint = os.path.join('checkpoints/exp', weight,'CP_last.pth')
         
         if not args.late_fusion:
-            scale = 1
-            scale = 1
+            scale = 1            
 
             kwargs = {}
             kwargs['spatial_in_channel'] = 1
@@ -309,7 +458,7 @@ if __name__ == '__main__':
             kwargs['n_depth'] = 5
             kwargs['bilinear'] = False
             kwargs['unet_channel_start'] = 64
-            kwargs['kf_channels'] = 64
+            kwargs['kf_channels'] = 32
 
             net = TwoStreamUNet(args, device=device, **kwargs)
         
@@ -334,8 +483,10 @@ if __name__ == '__main__':
             # eval_net(net= net, device=device, args=args, **kwargs)
             eval_net(writer, 0, 
                     net, test_data, kwargs['n_classes'], 
-                    criterion, None,
-                    args.kalman_flag, device, args)
+                    criterion, device, args)
+
+            # eval_net_stacked(writer, 0, net, test_data, kwargs['n_classes'], 
+            #                 criterion, device, args)
 
             print("done evaluation, closing tensorboard writer ")
             if writer is not None:

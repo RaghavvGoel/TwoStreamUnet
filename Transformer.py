@@ -39,7 +39,7 @@ class Attention(nn.Module):
         # self.dropout = nn.Dropout(dropout)
 
         # self.to_qkv = nn.Linear(dim, inner_dim * 3, bias = False)
-        self.to_q = nn.Linear(dim, inner_dim, bias = False)
+        self.to_q = nn.Linear(dim, inner_dim, bias = False) # we have subsumed this in encoder, so can be removed
         self.to_k = nn.Linear(dim, inner_dim, bias=False)
         self.to_v = nn.Linear(dim, inner_dim, bias=False)
 
@@ -48,9 +48,8 @@ class Attention(nn.Module):
             # nn.Dropout(dropout)
         ) if project_out else nn.Identity()
 
-    def forward(self, z, x):
-        # x is [x_tilde, K_prev]
-        # z is the measurement error
+    def forward(self, z, x, bilateral_flag=False, bilateral_feat=None):
+        #
         q = self.to_q(z)
         k = self.to_k(x)
         v = self.to_v(x)
@@ -60,15 +59,20 @@ class Attention(nn.Module):
         v = rearrange(v, 'b n (h d) -> b h n d', h = self.heads)
 
         dots = torch.matmul(q, k.transpose(-1, -2)) * self.scale
+
+        if bilateral_flag:
+            # print("dots shape {}, bilateral_feat shape {}".format(dots.shape, torch.stack([bilateral_feat]*self.heads, dim=1).shape))
+            dots = dots + torch.stack([bilateral_feat]*self.heads, dim=1)
         attn = nn.functional.softmax(dots, dim=-1)
         # attn = self.dropout(attn)
 
         out = torch.matmul(attn, v)
-        out = rearrange(out, 'b h n d -> b n (h d)')
+        out = rearrange(out, 'b h n d -> b n (h d)')  # n is number of nodes/elements
+        # out = torch.mean(out, dim = 1) #* mean along head
         return self.to_out(out)
 
 class Transformer(nn.Module):
-    def __init__(self, dim, depth, heads, dim_head, mlp_dim, dropout = 0.):
+    def __init__(self, dim, depth, heads, dim_head, mlp_dim=128, dropout = 0.):
         super().__init__()
         self.layers = nn.ModuleList([])
         for _ in range(depth):
@@ -78,14 +82,21 @@ class Transformer(nn.Module):
             # ]))
             self.layers.append(nn.ModuleList([
                 Attention(dim, heads=heads, dim_head = dim_head, dropout = dropout),
-                nn.LayerNorm(dim),
-                FeedForward(dim, dim, mlp_dim, dropout=dropout),
                 nn.LayerNorm(dim)
+                # FeedForward(dim, dim, mlp_dim, dropout=dropout),
+                # nn.LayerNorm(dim)
             ]))
+        #! add position embedding 
+        # self.pos_embbeding = nn.Parameter(torch.randn(1, num_patches+1, dim))
+        
     def forward(self, z, x):
         # z_x_K : concatenated along batch dim
         # Query => x[:B], Key, Value => x[B:]
-        for attn, _, ff, _ in self.layers:
-            z = attn(z, x) # + z
-            z = ff(z) #+ z
+        # for attn, _, ff, _ in self.layers:
+        #     z = attn(z, x)  + z
+        #     z = ff(z) + z
+        for attn, _, in self.layers:
+            # take mean over heads
+            z = attn(z, x)  + z
+
         return z

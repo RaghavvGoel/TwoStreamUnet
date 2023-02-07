@@ -66,20 +66,14 @@ def log_tensorboard(writer, global_step, type, true_masks, masks_pred, true_over
         writer.add_images(type+'_features'+'/last_encoded_feature', last_encoded_feature.unsqueeze(1), global_step)
     if true_pred_overlayed_imgs is not None:
         writer.add_images(type + '/true_pred_combined_overlay', true_pred_overlayed_imgs_, global_step)
-    # if len(spatial_features) > 0: 
-    #     pass
-    #     # spatial_features_ = spatial_features[rand_inds].unsqueeze(2)
-    #     # writer.add_images(type+'_features/spatial_features', spatial_features_.reshape(-1,1,x_spatial_shape[-2],x_spatial_shape[-1]), global_step)
-    # if len(temporal_features) > 0:
-    #     pass
-    #     # temporal_features_ = temporal_features[rand_inds].unsqueeze(2)
-    #     # writer.add_images(type+'_features/temporal_features', temporal_features_.reshape(-1,1,x_spatial_shape[-2],x_spatial_shape[-1]), global_step)
 
-def eval_net_stacked(writer, global_step, net, test_data, n_classes, criterion, constrastive_criterion, kalman_flag, device, args):
+
+def eval_net_stacked(writer, global_step, net, test_data, n_classes, criterion, device, args):
     '''
     #! EVALUATE
     '''
     # images, flows, needle_masks, masks, flow_concats  = get_dict_vals(data)
+    kalman_flag = False
     n_eval = len(test_data)    
     epoch_loss = 0
     true_mask_list, pred_mask_list, loss_list = [], [], []
@@ -87,27 +81,16 @@ def eval_net_stacked(writer, global_step, net, test_data, n_classes, criterion, 
     images_list = []
     flows_list = []
     iou_list, dsc_list, precision_list, recall_list = [], [], [], []        
-
     with torch.no_grad():
         # i = 0
-        # ipdb.set_trace()
         for j, data in enumerate(test_data):
             # import ipdb; ipdb.set_trace()
             print("j=",j)
             new_video_flag = True                 
-            # print("i= ", i)
             mask_type = torch.float32 #if n_classes == 1 else torch.long                
             imgs = data['images'] 
-            true_masks = data['needle_masks'] 
-            if kalman_flag:
-                flows = None 
-                imgs_prev = None 
-
-                imgs = imgs.to(device=device, dtype=mask_type).unsqueeze(0).unsqueeze(0)
-                true_masks = true_masks.to(device=device, dtype=mask_type).unsqueeze(0).unsqueeze(0)
-                flows = None 
-                imgs_prev = None 
-            elif args.flow_flag:
+            true_masks = data['needle_masks']
+            if args.flow_flag:
                 imgs_prev = data['images_prev']
                 flows = data['flow_concats']                     
                 imgs_prev = imgs_prev.to(device=device)
@@ -125,7 +108,8 @@ def eval_net_stacked(writer, global_step, net, test_data, n_classes, criterion, 
                 imgs = imgs.to(device=device, dtype=mask_type).unsqueeze(0)
                 true_masks = true_masks.to(device=device, dtype=mask_type).unsqueeze(0)
             
-            masks_pred, last_encoded_feature, _, _, _ = net(imgs, flow=flows, image_prev=imgs_prev, new_video_flag=new_video_flag)
+            # ipdb.set_trace()
+            masks_pred, _, _, _ = net(imgs, flow=flows, image_prev=imgs_prev, new_video_flag=new_video_flag)
             new_video_flag = False            
             
             # masks_pred, x_spatial, x_temporal = net(imgs,flows_) # flow in form of x, y matrices
@@ -173,13 +157,6 @@ def eval_net_stacked(writer, global_step, net, test_data, n_classes, criterion, 
             pred_overlayed_imgs_list.append(pred_overlayed_img)
             true_pred_overlayed_imgs_list.append(true_pred_overlayed_img)
             rand_inds = None
-            if kalman_flag:
-                rand_inds = 0 #range(imgs.shape[1]) # all images across sequences
-                # import ipdb; ipdb.set_trace()
-            # if writer is not None:
-            #     log_tensorboard(writer, i + j*len(data['images']), 'test', true_masks, masks_pred, true_overlayed_img, pred_overlayed_img, imgs, None ,None,
-            #                     rand_inds, kalman_flag, true_pred_overlayed_img)              
-
 
     epoch_loss = np.mean(loss_list)
     images_list = torch.concat(images_list, dim=0)
@@ -199,10 +176,52 @@ def eval_net_stacked(writer, global_step, net, test_data, n_classes, criterion, 
     print("iou={}, precision={}, recall={}, DSC={}".format(avg_iou, avg_precision, avg_recall, avg_dsc))
 
 
-def eval_net(writer, global_step, net, test_data, n_classes, criterion, constrastive_criterion, kalman_flag, device, args):
+def find_needle_params(mask):
+    ipdb.set_trace()
+    
+    idx = np.where(mask == 1)
+
+    if len(idx[0]) == 0:
+        return mask, None
+
+    idx_y_min = np.where(idx[1] == np.min(idx[1]))
+    idx_y_max = np.where(idx[1] == np.max(idx[1]))
+
+    print("idx_y_min = ", idx_y_min)
+    print("idx_y_max = ", idx_y_max)
+
+
+    x_max = np.max(idx[0][idx_y_max])
+    x_min = np.min(idx[0][idx_y_min])
+
+    y_min = np.min(idx[1]) 
+    y_max = np.max(idx[1])
+
+    # swap max and min if x_max < x_min 
+    if x_min > x_max:
+        # reverse the notation
+        x_min, x_max = x_max, x_min
+        y_min, y_max = y_max, y_min
+        
+    print("min x = {}, min y = {}".format(x_min, y_min))
+    print("max x = {}, max y = {}".format(x_max, y_max))
+    # make circle on the min and max : image will be 3 channel     
+    mask_new = cv2.circle(mask, (y_min, x_min), 3, (0, 0, 255), 2)
+    mask_new = cv2.circle(mask, (y_max, x_max), 3, (0, 255, 0), 2)
+
+    needle_length = ((x_min - x_max)**2 + (y_min - y_max)**2)**(0.5)
+    needle_angle = np.arctan2(y_max-y_min, x_max-x_min)
+
+    x_start, y_start = x_min, y_min
+    x_tip, y_tip = x_max, y_max
+
+    return mask_new, [x_start, y_start, needle_angle, needle_length, x_tip, y_tip]
+
+def eval_net(writer, global_step, net, test_data, n_classes, criterion, device, args):
     '''
     #! EVALUATE
     '''
+    kalman_flag = args.kalman_flag
     # images, flows, needle_masks, masks, flow_concats  = get_dict_vals(data)
     n_eval = len(test_data)    
     epoch_loss = 0
@@ -219,6 +238,7 @@ def eval_net(writer, global_step, net, test_data, n_classes, criterion, constras
             # import ipdb; ipdb.set_trace()
             print("j=",j)
             new_video_flag = True
+            # import ipdb; ipdb.set_trace()
             for i in range(len(data['images'])):            
                 # print("i= ", i)
                 mask_type = torch.float32 #if n_classes == 1 else torch.long                
@@ -227,11 +247,9 @@ def eval_net(writer, global_step, net, test_data, n_classes, criterion, constras
                 if kalman_flag:
                     flows = None 
                     imgs_prev = None 
-
                     imgs = imgs.to(device=device, dtype=mask_type).unsqueeze(0).unsqueeze(0)
                     true_masks = true_masks.to(device=device, dtype=mask_type).unsqueeze(0).unsqueeze(0)
-                    flows = None 
-                    imgs_prev = None 
+                    flows, imgs_prev = None , None
                 elif args.flow_flag:
                     imgs_prev = data['images_prev']
                     flows = data['flow_concats']                     
@@ -250,18 +268,35 @@ def eval_net(writer, global_step, net, test_data, n_classes, criterion, constras
                     imgs = imgs.to(device=device, dtype=mask_type).unsqueeze(0)
                     true_masks = true_masks.to(device=device, dtype=mask_type).unsqueeze(0)
                 
-                masks_pred, last_encoded_feature, _, _, _ = net(imgs, flow=flows, image_prev=imgs_prev, new_video_flag=new_video_flag)
+                masks_pred, masks_pred_mean, _, _, = net(imgs, flow=flows, image_prev=imgs_prev, new_video_flag=new_video_flag)
                 new_video_flag = False
                 # below is false for lstm + unet 
                 if (i+1)%args.traj_len == 0:
                     new_video_flag = True
                 # masks_pred, x_spatial, x_temporal = net(imgs,flows_) # flow in form of x, y matrices
-
+                if args.kalman_flag and args.gauss_flag:
+                    masks_pred = masks_pred_mean
+                
                 loss = criterion(masks_pred, true_masks) # bce with logits already has sigmoid 
                 # loss = sigmoid_focal_loss(masks_pred, true_masks, device)
                 masks_pred = torch.sigmoid(masks_pred)
                 masks_pred_threshold = (masks_pred > 0.5).float() # additional filtering ? 
                 
+                # if args.needle_params:
+                #     true_masks_ = true_masks[0][0][0].cpu().numpy()
+                #     masks_pred_threshold_ = masks_pred_threshold[0][0][0].cpu().numpy()
+                #     true_mask_new, needle_params_true = find_needle_params(true_masks_)
+                #     masks_pred_new, needle_params_pred = find_needle_params(masks_pred_threshold_)
+                #     if needle_params_true == None:
+                #         print("no needle")
+                #     else:
+                #         # [x_start, y_start, needle_angle, needle_length, x_tip, y_tip]
+                #         # write images here 
+                #         print("needle params")
+                #         print(needle_params_true)
+                #         print(needle_params_pred)
+
+
                 #* compute IOU and keep a store            
                 iou_val, _, _ = iou(masks_pred_threshold, true_masks, kalman_flag=kalman_flag, eval=True)#.item()
                 if iou_val is not None:
@@ -352,18 +387,12 @@ def get_args():
                                      formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     parser.add_argument('-e', '--epochs', metavar='E', type=int, default=5,
                         help='Number of epochs', dest='epochs')
-    parser.add_argument('-b', '--batch_size', metavar='B', type=int, nargs='?', default=1,
-                        help='Batch size', dest='batch_size')
-    parser.add_argument('-l', '--learning-rate', metavar='LR', type=float, nargs='?', default=0.0001,
-                        help='Learning rate', dest='lr')
-    parser.add_argument('-f', '--load', dest='load', type=str, default=False,
-                        help='Load model from a .pth file')
-    parser.add_argument('-s', '--scale', dest='scale', type=float, default=0.5,
-                        help='Downscaling factor of the images')
-    parser.add_argument('-v', '--validation', dest='val', type=float, default=10.0,
-                        help='Percent of the data that is used as validation (0-100)')
-    parser.add_argument('--use_saved_data', action='store_true' ,default=False,
-                        help='using saved data')
+    parser.add_argument('-b', '--batch_size', metavar='B', type=int, nargs='?', default=1, help='Batch size', dest='batch_size')
+    parser.add_argument('-l', '--learning-rate', metavar='LR', type=float, nargs='?', default=0.0001,  help='Learning rate', dest='lr')
+    parser.add_argument('-f', '--load', dest='load', type=str, default=False, help='Load model from a .pth file')
+    parser.add_argument('-s', '--scale', dest='scale', type=float, default=0.5, help='Downscaling factor of the images')
+    parser.add_argument('-v', '--validation', dest='val', type=float, default=10.0, help='Percent of the data that is used as validation (0-100)')
+    parser.add_argument('--use_saved_data', action='store_true' ,default=False, help='using saved data')
     parser.add_argument('--task', type=str, default = 'train')
     parser.add_argument('--saved_data_file', type=str, default='4')
     parser.add_argument('--iter', type=str, default='0', help='sets the tensorbaord and weight name as well')
@@ -385,6 +414,13 @@ def get_args():
     parser.add_argument('--eval' , action='store_true', default=True, help='Run Validation for video')
     parser.add_argument('--flow_flag', action='store_true', default = False, help='make true when optical flow')
     parser.add_argument('--traj_len', type=int, default=10, help='trajectory length after which kalman re-initialized')
+    parser.add_argument('--data_type', type=str, default='DARPA', help='type of data choose from [DARPA, UPMC, BlueGel]')
+    parser.add_argument('--gauss_flag', action='store_true', default=False, help='flag for using gaussian distribution inside Kalman')
+    parser.add_argument('--transformer_flag', action='store_true', default=False, help='flag for using tranformer for kalman gain')
+    parser.add_argument('--process_model_flag', action='store_true', default=False, help='generate next state using just process model')
+    parser.add_argument('--high_res_flag', action='store_true', default=False, help='generate next state using just process model')
+    parser.add_argument('--vector_flag', action='store_true', default=False, help='use vector based kalman filter')
+    parser.add_argument('--needle_params', action='store_true', default=False, help='needle parameters to compute')
 
     return parser.parse_args()
 
@@ -395,21 +431,20 @@ if __name__ == '__main__':
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     
     #* GENERATE DATA
-    PARENT_FOLDER_TEST = 'new_dataset/test' #os.path.join(ROOT_FOLDER, 'data/test')
-    LIST_OF_DATASETS_TEST = [
-                         'task_positives_93-2022_04_12_18_28_39-segmentation mask 1.1',                        
-                         'task_negatives_204-2022_04_08_16_58_31-segmentation mask 1.1',
-                         'task_positives_67-2022_04_18_19_11_58-segmentation mask 1.1'
-                            ]   
+    _, _, PARENT_FOLDER_TEST, LIST_OF_DATASETS_TEST, IMAGE_LOC, MASK_LOC = get_list_train_test_data(args.data_type)
+
     if not args.use_saved_data:
-        # test_data = get_data_dict_kalman(LIST_OF_DATASETS_TEST, PARENT_FOLDER_TEST, args.saved_data_file, 'test', traj_len = 50)
         if args.flow_flag or args.n_flow > 1:
-            test_data = get_data_dict_history(args.n_flow, LIST_OF_DATASETS_TEST, PARENT_FOLDER_TEST, args.saved_data_file, type='test', flow_flag=args.flow_flag)
+            test_data = get_data_dict_history(args.n_flow, PARENT_FOLDER_TEST, LIST_OF_DATASETS_TEST, IMAGE_LOC, MASK_LOC, args.saved_data_file, \
+                                                type='test', flow_flag=args.flow_flag, data_type=args.data_type)
         else:
-            test_data = get_data_dict_kalman_eval(LIST_OF_DATASETS_TEST, PARENT_FOLDER_TEST, args.saved_data_file)
+            test_data = get_data_dict_kalman_eval(PARENT_FOLDER_TEST, LIST_OF_DATASETS_TEST, IMAGE_LOC, MASK_LOC, args.saved_data_file, \
+                                                    type='test', data_type=args.data_type)
+
     else:
         test_data = torch.load(os.path.join('saved_data', args.saved_data_file, 'test.pt')) #torch.load('saved_data/3/test.pt')
     
+    ipdb.set_trace()
     #! when feeding in the entire seqeunce no need to wrap in DataLoader
     # test_data =  DataLoader(test_data, batch_size=1*batch_size, shuffle=False)
 
@@ -423,25 +458,33 @@ if __name__ == '__main__':
     # dir_checkpoint = os.path.join('checkpoints/exp', str(args.iter) + '_conv_layers_{}_n_flow_={}'.format(args.conv_layers,args.n_flow))
     batch_size = args.batch_size 
     
-    # list_of_weights = [
+    list_of_weights = [
                         # 'VanillaUnetOG_start_channel_64_seed_10_Abl_conv_layers_2_nflow_1',
-                        # 'VanillaUnetOG_start_channel_64_seed_101_Abl_conv_layers_2_nflow_1',
-                    #    'VanillaUnet_start_channel_64_seed_101_Abl_conv_layers_1_nflow_1'
-                    # ]
+                        # 'VanillaUnetOG_start_channel_64_seed_101_Abl_conv_layers_1_nflow_1',
+                    #    'UNet_cross2_BAMC_unetstart_64_kf_32_seed_42_conv_layers_1_nflow_1'
+                    #    'Attention_cross2_BAMC_unetstart_64_kf_32_seed_42_conv_layers_1_nflow_1'
+                    ]
     # list_of_weights = ['FlowUnetOG_start_channel_64_seed_10_Abl_conv_layers_1_nflow_1',
     #                    'FlowUnetOG_start_channel_64_seed_42_Abl_conv_layers_1_nflow_1',
     #                    'FlowUnetOG_start_channel_64_seed_101_Abl_conv_layers_1_nflow_1'
     #                   ]
-    # list_of_weights = ['ConvKalmanNet_unet_start_channel_64_kf_32_seed_42_Abl_conv_layers_1_nflow_1']
-    list_of_weights = ['ConvKalman_unetstart_64_kf_32_trajlen_35_seed_42_conv_layers_1_nflow_1']
+    list_of_weights = ['Convkalman2_cross2_BAMC_unetstart_64_kf_32_seed_42_conv_layers_1_nflow_1']
+    # list_of_weights = ['ConvKalman_unetstart_64_kf_32_trajlen_35_seed_42_conv_layers_1_nflow_1']
     # list_of_weights = ['ConvKalman_unetstart_64_kf_64_trajlen_35_seed_101_conv_layers_1_nflow_1']
-    # list_of_weights = ['StackedUnet_unetstart_64_seed_42_conv_layers_1_nflow_4']
+    # list_of_weights = ['ConvKalmanGauss_UNet_DARPA_unetstart_64_kf_32_seed_42_conv_layers_1_nflow_1']
+    # list_of_weights = ['Stacked_cross2_BAMC_unetstart_64_kf_32_seed_42_conv_layers_1_nflow_4']
+    # list_of_weights = ['LSTM_cross2_BAMC_unetstart_64_kf_32_seed_42_conv_layers_1_nflow_1']
+    # list_of_weights = ['ConvKalman_UNet_UPMC_unetstart_64_kf_32_seed_42_trajlen=15_conv_layers_1_nflow_1'] # ConvKalman_BlueGel_unetstart_64_kf_32_seed_101_trajlen=12_conv_layers_1_nflow_1
+
+
+    # list_of_weights = ['Stacked_UNet_BlueGel_unetstart_64_seed_10_conv_layers_1_nflow_4']
+
+
     for weight in list_of_weights:
         dir_checkpoint = os.path.join('checkpoints/exp', weight,'CP_best_val_score.pth')
         # dir_checkpoint = os.path.join('checkpoints/exp', weight,'CP_best_iou.pth')
         
         if not args.late_fusion:
-            scale = 1
             scale = 1
 
             kwargs = {}
@@ -473,15 +516,9 @@ if __name__ == '__main__':
 
         try:
             criterion = nn.BCEWithLogitsLoss() 
-            # eval_net(net= net, device=device, args=args, **kwargs)
-            eval_net(writer, 0, 
-                    net, test_data, kwargs['n_classes'], 
-                    criterion, None,
-                    args.kalman_flag, device, args)
-            # eval_net_stacked(writer, 0, 
-            #         net, test_data, kwargs['n_classes'], 
-            #         criterion, None,
-            #         args.kalman_flag, device, args)                    
+
+            eval_net(writer, 0, net, test_data, kwargs['n_classes'],criterion, device, args)
+            # eval_net_stacked(writer, 0, net, test_data, kwargs['n_classes'],criterion, device, args)
 
             print("done evaluation, closing tensorboard writer ")
             if writer is not None:

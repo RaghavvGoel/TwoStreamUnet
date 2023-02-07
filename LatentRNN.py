@@ -3,6 +3,7 @@ import torch.nn as nn
 import ipdb
 
 torch.manual_seed(42)
+# torch.manual_seed(101)
 
 class EncoderObservation(nn.Module):
     def __init__(self, device, B, in_channels, height, width, state_dim=256) -> None:
@@ -88,7 +89,7 @@ class LSTMModel(nn.Module):
         
         self.lstm = nn.LSTM(input_size=state_dim, hidden_size=state_dim, batch_first=True)
 
-    def forward(self, x):
+    def forward(self, x, new_video_flag=False):
         '''
         Forward pass of the Kalman Filter model
         @init_mean: Initial flattened Unet last layer output
@@ -104,7 +105,7 @@ class LSTMModel(nn.Module):
         
         return x_estimate
 
-class LSTMModelEval(nn.Module):
+class LSTMModelEval(LSTMModel):
 
     def __init__(self, device, B, in_channels, height, width, state_dim=256):
         '''
@@ -117,7 +118,7 @@ class LSTMModelEval(nn.Module):
         @param state_dim: Size of Latent state (flattened)
         '''
 
-        super().__init__()
+        super(LSTMModelEval, self).__init__(device, B, in_channels, height, width, state_dim)
 
         self.device = device
         self.B = B
@@ -125,12 +126,12 @@ class LSTMModelEval(nn.Module):
         self.state_dim = state_dim
 
         # mapping last layer UNet to state_dim
-        self.encoder = EncoderObservation(device, B, in_channels, height, width, state_dim)
+        # self.encoder = EncoderObservation(device, B, in_channels, height, width, state_dim)
 
         # mapping state_dim to last_layer UNet
-        self.decoder = DecoderObservation(device, B, in_channels, height, width, state_dim)
+        # self.decoder = DecoderObservation(device, B, in_channels, height, width, state_dim)
         
-        self.lstm = nn.LSTM(input_size=state_dim, hidden_size=state_dim, batch_first=True)
+        # self.lstm = nn.LSTM(input_size=state_dim, hidden_size=state_dim, batch_first=True)
 
     def forward(self, x, new_video_flag=False):
         '''
@@ -150,5 +151,5 @@ class LSTMModelEval(nn.Module):
 
         x_estimate = self.decoder(out)
         
-        return x_estimate        
+        return x_estimate
 

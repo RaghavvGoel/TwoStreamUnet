@@ -11,6 +11,7 @@ from torch import optim
 from tqdm import tqdm
 import ipdb
 import torch.nn.functional as F
+from math import pi
 import random
 from tensorboardX import SummaryWriter
 
@@ -19,14 +20,15 @@ from two_stream_unet import TwoStreamUNet, ContrastiveLoss
 from rishabh import iou, dice_score, precision_recall
 
 # torch.manual_seed(10)
-# torch.manual_seed(42)
 torch.manual_seed(42)
+# torch.manual_seed(101)
 
 # from torch.utils.tensorboard import SummaryWriter
-# from utils.dataset import BasicDataset # write your own 
+# from utils.dataset import BasicDataset # write your own
 from utils_two_stream_unet import find_flow_history, get_dict_vals, sigmoid_focal_loss, \
-                                    get_data_dict, get_data_dict_history, get_data_dict_kalman, get_weights
-                                
+                                    get_data_dict_history, get_data_dict_kalman, get_weights, \
+                                get_list_train_test_data, get_data_dict_kalman_vec
+
 
 from torch.utils.data import DataLoader, random_split
 
@@ -40,7 +42,7 @@ PARENT_FOLDER_TEST = 'new_dataset/test' #os.path.join(ROOT_FOLDER, 'data/test')
 
 # LIST_OF_DATASETS_TRAIN = ['task_positives_189-2022_04_12_18_32_54-segmentation mask 1.1']
 LIST_OF_DATASETS_TRAIN = [
-                        'task_negatives_136-2022_04_21_17_19_17-segmentation mask 1.1',                        
+                        'task_negatives_136-2022_04_21_17_19_17-segmentation mask 1.1',
                         'task_positives_11-2022_04_12_18_28_14-segmentation mask 1.1',
                         'task_positives_153-2022_04_12_18_32_22-segmentation mask 1.1',
                         'task_positives_189-2022_04_12_18_32_54-segmentation mask 1.1',
@@ -76,25 +78,29 @@ LIST_OF_DATASETS_TEST = [
                         # 'task_4. femoral nerve with needle not passing fascial planes-2022_07_09_14_19_20-segmentation mask 1.1'
                         ]
 
+#! command for transfering data:  rsync -a --ignore-existing data/PigLabData  luyuan@luyuan.wifi.cmu.edu:~/thomaswe/TwoStreamUnet/new_dataset
+
 #! command to run for training: (conda activate vision_stuff)
 #! python train_two_stream_unet.py --use_saved_data --saved_data_file 601_dict_normalized_all_positive_nflow=1_gauss_both_needle_label --epochs 150 --batch-size 10 --iter gauss_vanilla_L2_reg_1e-4
 
 # ! command to validate (will be on the video in LIST_OF_DATASETS_TEST)
 
-#! use --samples_per_plugin images = 100 to get images visible in tensorboard at every 100 steps
+#! use --samples_per_plugin images=100 to get images visible in tensorboard at every 100 steps
 
-def log_tensorboard(writer, global_step, type, true_masks, masks_pred, true_overlayed_imgs, pred_overlayed_imgs, true_pred_overlayed_imgs, imgs, last_encoded_feature, flows,
+def log_tensorboard(writer, global_step, type, true_masks, masks_pred, true_overlayed_imgs, pred_overlayed_imgs, true_pred_overlayed_imgs, imgs, sigma, flows,
                     rand_inds, kalman_flag=False, flow_flag=False):
     '''
     logger for only validation
     '''
     # choose random index to check | all 
+    sigma_= None
     if kalman_flag:
         true_masks_ = true_masks
         masks_pred_ = masks_pred
         true_overlayed_imgs_ = true_overlayed_imgs
         pred_overlayed_imgs_ = pred_overlayed_imgs
         imgs_ = imgs
+        sigma_ = sigma
     else:
         true_masks_ = true_masks[rand_inds]
         masks_pred_ = masks_pred[rand_inds]
@@ -106,11 +112,14 @@ def log_tensorboard(writer, global_step, type, true_masks, masks_pred, true_over
         # writer.add_images(type+'/flows', flows_rand_inds[:,0:1,:,:], global_step)
     
     writer.add_images(type+'/images', imgs_, global_step)
-    writer.add_images(type+'/mask_pred_sigmoid', masks_pred_, global_step)
+    # writer.add_images(type+'/mask_pred_sigmoid', masks_pred_, global_step)
     writer.add_images(type+'/true_overlayed', true_overlayed_imgs_, global_step)
     writer.add_images(type+'/pred_overlayed', pred_overlayed_imgs_, global_step)
     if true_pred_overlayed_imgs is not None:
         writer.add_images(type+'/combined_overlayed', true_pred_overlayed_imgs, global_step)
+    if sigma_ is not None:
+        writer.add_images(type+'/uncertainty', sigma, global_step)
+
     # if last_encoded_feature is not None:
     #     writer.add_images(type+'_features'+'/last_encoded_feature', last_encoded_feature.unsqueeze(1), global_step)
     # if len(spatial_features) > 0: 
@@ -123,22 +132,30 @@ def log_tensorboard(writer, global_step, type, true_masks, masks_pred, true_over
     #     # writer.add_images(type+'_features/temporal_features', temporal_features_.reshape(-1,1,x_spatial_shape[-2],x_spatial_shape[-1]), global_step)
 
 
-def eval_net(writer, global_step, net, test_data, n_classes, criterion, constrastive_criterion, kalman_flag, device, flow_flag=False, n_flow=1):
+def eval_net(writer, global_step, net, test_data, n_classes, criterion, device, args):
     '''
     #! EVALUATE
     '''
     # images, flows, needle_masks, masks, flow_concats  = get_dict_vals(data)    
+    kalman_flag = args.kalman_flag 
+    gauss_flag = args.gauss_flag
+    flow_flag = args.flow_flag
+    n_flow = args.n_flow
+    vector_flag = args.vector_flag
+
     n_eval = len(test_data)    
     epoch_loss = 0
     true_mask_list, pred_mask_list, loss_list = [], [], []
     true_overlayed_imgs_list, pred_overlayed_imgs_list, true_pred_overlayed_imgs_list = [], [], []
+    sigma_list, mean_list = [], []
+    if vector_flag:
+        x_start_error_list, y_start_error_list, angle_error_list, length_error_list = [], [], [], []
     spatial_features_list, temporal_features_list = [], []
     images_list = []
     flows_list = []
     iou_list = []
     tp_by_all_positive_list = []
     precision_list, recall_list, dice_score_list = [], [], []
-
     with torch.no_grad():
         i = 0
         for i, data in enumerate(test_data):                   
@@ -147,19 +164,16 @@ def eval_net(writer, global_step, net, test_data, n_classes, criterion, constras
             true_masks = data['needle_masks'] 
             if kalman_flag:
                 flows = None 
-                imgs_prev = None 
+                imgs_prev = None
+                if vector_flag:
+                    true_mask_new = data['needle_masks_new']
+                    needle_params = data['needle_params'] 
+                    needle_params = needle_params.to(device=device, dtype=mask_type)
             elif flow_flag:
                 imgs_prev = data['images_prev']
                 flows = data['flow_concats'] 
-                # flowsX = data['flow_x']
-                # flowsY = data['flow_y']
-                # flows_ = torch.cat([flowsX, flowsY], dim=1)
-                # needle_labels = data['needle_label']
                 imgs_prev = imgs_prev.to(device=device) 
                 flows = flows.to(device=device, dtype=mask_type) / 255
-                # flows_ = flows_.to(device=device, dtype=mask_type)
-                # needle_labels = needle_labels.to(device=device, dtype = mask_type)
-
             else:
                 flows = None
                 if n_flow>1:
@@ -170,90 +184,144 @@ def eval_net(writer, global_step, net, test_data, n_classes, criterion, constras
 
             imgs = imgs.to(device=device, dtype=mask_type)
             true_masks = true_masks.to(device=device, dtype=mask_type)
-            masks_pred, _, x_spatial, x_temporal, flow = net(imgs,flows,imgs_prev) 
+            masks_pred, mean, sigma, flow = net(imgs,flows,imgs_prev) 
             # masks_pred, x_spatial, x_temporal = net(imgs,flows_) # flow in form of x, y matrices
 
-            if x_spatial is not None:
-                x_spatial = x_spatial.to('cpu')
-                spatial_features_list.append(x_spatial)
-            if x_temporal is not None:
-                x_temporal = x_temporal.to('cpu') 
-                temporal_features_list.append(x_temporal)
+            if gauss_flag:
+                sigma = sigma.to('cpu')                
+                sigma = sigma/torch.max(sigma) if torch.max(sigma) > 1 else sigma                
+                sigma_list.append(sigma)
 
-            loss = criterion(masks_pred, true_masks) # bce with logits already has sigmoid 
+                # use mean as prediction during evaluation                 
+                masks_pred = mean
+
+            if vector_flag:
+                # scale_needle_param = torch.tensor([1/256, 1/256, 1/(2*pi), 1/(256*(2**0.5))]).to(device)
+                scale_needle_param = torch.tensor([256, 256, (2*pi), 256]).to(device)
+                masks_pred  = masks_pred[:,:,:4]*scale_needle_param
+                masks_true = needle_params[:,:,:4] #*scale_needle_param 
+                loss = criterion(masks_pred, masks_true)
+            else:
+                loss = criterion(masks_pred, true_masks) # bce with logits already has sigmoid 
+            if vector_flag:
+                x_start_error = torch.mean(torch.abs(needle_params[:,:,0] - masks_pred[:,:,0]))
+                y_start_error = torch.mean(torch.abs(needle_params[:,:,1] - masks_pred[:,:,1]))
+                angle_error = torch.mean(torch.abs(needle_params[:,:,2] - masks_pred[:,:,2])) 
+                length_error = torch.mean(torch.abs(needle_params[:,:,3] - masks_pred[:,:,3]))
             # loss = sigmoid_focal_loss(masks_pred, true_masks, device)
-            masks_pred = torch.sigmoid(masks_pred)
-            masks_pred_threshold = (masks_pred > 0.5).float() # additional filtering ? 
+            else:
+                masks_pred = torch.sigmoid(masks_pred)
+                masks_pred_threshold = (masks_pred > 0.5).float() # additional filtering ? 
             
-            #* compute IOU and keep a store            
-            iou_batch, tp_by_all_positive, _ = iou(masks_pred_threshold, true_masks, kalman_flag=kalman_flag)
-            iou_batch, tp_by_all_positive = iou_batch.item(), tp_by_all_positive.item()
-            iou_list.append(iou_batch)
-            tp_by_all_positive_list.append(tp_by_all_positive)
-            #* compute precision, recall and DSC
-            dice_score_value = dice_score(masks_pred_threshold, true_masks, kalman_flag=kalman_flag)
-            precision, recall = precision_recall(masks_pred_threshold, true_masks, kalman_flag=kalman_flag)
-            dice_score_value, precision, recall = dice_score_value.item(), precision.item(), recall.item()
-            precision_list.append(precision); recall_list.append(recall); dice_score_list.append(dice_score_value) 
+                #* compute IOU and keep a store            
+                iou_batch, tp_by_all_positive, _ = iou(masks_pred_threshold, true_masks, kalman_flag=kalman_flag)
+                iou_batch, tp_by_all_positive = iou_batch.item(), tp_by_all_positive.item()
+                iou_list.append(iou_batch)
+                tp_by_all_positive_list.append(tp_by_all_positive)
+                #* compute precision, recall and DSC
+                dice_score_value = dice_score(masks_pred_threshold, true_masks, kalman_flag=kalman_flag)
+                precision, recall = precision_recall(masks_pred_threshold, true_masks, kalman_flag=kalman_flag)
+                dice_score_value, precision, recall = dice_score_value.item(), precision.item(), recall.item()
+                precision_list.append(precision); recall_list.append(recall); dice_score_list.append(dice_score_value) 
+
+                masks_pred_threshold = masks_pred_threshold.to( 'cpu')
 
             imgs = imgs.to('cpu') 
             true_masks = true_masks.to('cpu') 
             if flow_flag:
                 flows = flows.to('cpu') 
                 flows_list.append(flows)
-            
+
             masks_pred = masks_pred.to( 'cpu')
-            masks_pred_threshold = masks_pred_threshold.to( 'cpu')
-            # if last_encoded_feature is not None:
-            #     last_encoded_feature = last_encoded_feature.to('cpu') # no need to plot in eval
 
             images_list.append(imgs)
             loss_list.append(loss.item())
 
-            true_mask_list.append(true_masks)
-            pred_mask_list.append(masks_pred)
-            # overlayed_imgs_list.append(torch.concat([imgs.to('cpu'), true_masks, masks_pred_],dim = 1))
-            true_overlayed_img = torch.concat([imgs, 0.6*imgs + 0.4*true_masks, imgs], dim = -3) 
-            pred_overlayed_img = torch.concat([imgs, 0.6*imgs + 0.4*masks_pred_threshold, imgs], dim = -3) 
-            true_pred_overlayed_img = torch.concat([masks_pred_threshold, torch.zeros_like(imgs), true_masks], dim = -3) 
+            if vector_flag:
+                x_start_error_list.append(x_start_error)
+                y_start_error_list.append(y_start_error)
+                angle_error_list.append(angle_error)
+                length_error_list.append(length_error)
+            else:
+                true_mask_list.append(true_masks)
+                pred_mask_list.append(masks_pred)
+                # overlayed_imgs_list.append(torch.concat([imgs.to('cpu'), true_masks, masks_pred_],dim = 1))
+                true_overlayed_img = torch.concat([imgs, 0.6*imgs + 0.4*true_masks, imgs], dim = -3) 
+                pred_overlayed_img = torch.concat([imgs, 0.6*imgs + 0.4*masks_pred_threshold, imgs], dim = -3) 
+                true_pred_overlayed_img = torch.concat([masks_pred_threshold, torch.zeros_like(imgs), true_masks], dim = -3) 
 
-            true_overlayed_imgs_list.append(true_overlayed_img)
-            pred_overlayed_imgs_list.append(pred_overlayed_img)
-            true_pred_overlayed_imgs_list.append(true_pred_overlayed_img)
+                true_overlayed_imgs_list.append(true_overlayed_img)
+                pred_overlayed_imgs_list.append(pred_overlayed_img)
+                true_pred_overlayed_imgs_list.append(true_pred_overlayed_img)
 
         epoch_loss = np.mean(loss_list)
         images_list = torch.concat(images_list, dim=0)
-        true_mask_list = torch.concat(true_mask_list, dim=0)        
-        if flow_flag:
-            flows_list = torch.concat(flows_list, dim=0)
-        pred_mask_list = torch.concat(pred_mask_list, dim=0)
-        true_overlayed_imgs_list = torch.concat(true_overlayed_imgs_list, dim=0)
-        pred_overlayed_imgs_list = torch.concat(pred_overlayed_imgs_list, dim=0)
-        true_pred_overlayed_imgs_list = torch.concat(true_pred_overlayed_imgs_list, dim=0)
+        if not vector_flag:
+            true_mask_list = torch.concat(true_mask_list, dim=0)        
+            if flow_flag:
+                flows_list = torch.concat(flows_list, dim=0)
+            if gauss_flag:            
+                sigma_list = torch.concat(sigma_list, dim=0)
+            pred_mask_list = torch.concat(pred_mask_list, dim=0)
+            true_overlayed_imgs_list = torch.concat(true_overlayed_imgs_list, dim=0)
+            pred_overlayed_imgs_list = torch.concat(pred_overlayed_imgs_list, dim=0)
+            true_pred_overlayed_imgs_list = torch.concat(true_pred_overlayed_imgs_list, dim=0)
     
-    avg_iou = np.mean(iou_list)
-    avg_tp_by_all_positive = np.mean(tp_by_all_positive_list)
-    avg_dice_score = np.mean(dice_score_list)
-    avg_recall = np.mean(recall_list)
-    avg_precision = np.mean(precision)
+    if not vector_flag:
+        avg_iou = np.mean(iou_list)
+        avg_tp_by_all_positive = np.mean(tp_by_all_positive_list)
+        avg_dice_score = np.mean(dice_score_list)
+        avg_recall = np.mean(recall_list)
+        avg_precision = np.mean(precision)
 
-    print("AVERAGE iou={}, dice_score={}, recall={}, precision={}".format(avg_iou, avg_dice_score, avg_recall, avg_precision))
+        print("AVERAGE iou={}, dice_score={}, recall={}, precision={}".format(avg_iou, avg_dice_score, avg_recall, avg_precision))
     # write random predictions and ground truths 
     if kalman_flag:
         rand_inds = range(imgs.shape[1]) #random.sample(range(0, n_eval), min(n_eval,10)) # choose any random image at each logging 
         batch_idx = random.sample(range(0, len(images_list)-1),1)[0]                
-        log_tensorboard(writer, global_step, 'test', true_mask_list[batch_idx], pred_mask_list[batch_idx], true_overlayed_imgs_list[batch_idx], pred_overlayed_imgs_list[batch_idx], true_pred_overlayed_imgs_list[batch_idx], images_list[batch_idx], None ,flows_list,
-                        rand_inds, kalman_flag, flow_flag=args.flow_flag)          
-        iou_0, tp_by_all_positive_0, _ = iou(pred_mask_list[batch_idx:batch_idx+1], true_mask_list[batch_idx:batch_idx+1], kalman_flag=kalman_flag)
-        iou_0, tp_by_all_positive_0 = iou_0.item(), tp_by_all_positive_0.item()
+        if vector_flag:
+            masks = torch.zeros_like(true_masks[0], dtype=torch.uint8).permute(0, 2, 3, 1).numpy()
+            masks_pred = masks_pred[0].numpy()
+            masks_list = []
+            for kk in range(masks.shape[0]):
+                x_tip = masks_pred[kk,0] + np.cos(masks_pred[kk,2])*masks_pred[kk,3]
+                y_tip = masks_pred[kk,1] + np.sin(masks_pred[kk,2])*masks_pred[kk,3]
+                # masks_tmp = cv2.circle(masks[kk], (int(round(masks_pred[kk,1])), int(round(masks_pred[kk,0]))), 3, (0, 0, 255), 2)
+                # masks_tmp = cv2.circle(masks_tmp, (int(round(y_tip)), int(round(x_tip))), 3, (0, 255, 0), 2)
+                masks_tmp = cv2.line(np.concatenate([masks[kk]]*3, axis=-1), (int(round(masks_pred[kk,1])), int(round(masks_pred[kk,0]))), (int(round(y_tip)), int(round(x_tip))), (0,0,255), 4)
+                masks_list.append(masks_tmp)
+            masks_list = torch.from_numpy(np.stack(masks_list)).permute(0, 3, 1, 2)
+            #? just logging error of last data
+            writer.add_images('test/mask_pred', masks_list, global_step)
+            writer.add_images('test/mask_pred_overlayed', masks_list + true_mask_new[0], global_step)
+            writer.add_images('test/true_pred', true_masks[0], global_step)
+            writer.add_images('test/true_pred_new', true_mask_new[0], global_step)
+            writer.add_scalar('test/x_start_error', torch.mean(torch.stack(x_start_error_list)), global_step)
+            writer.add_scalar('test/y_start_error', torch.mean(torch.stack(y_start_error_list)), global_step)
+            writer.add_scalar('test/length_error', torch.mean(torch.stack(length_error_list)), global_step)
+            writer.add_scalar('test/angle_error', torch.mean(torch.stack(angle_error_list)), global_step)
+        elif gauss_flag:
+            log_tensorboard(writer, global_step, 'test', true_mask_list[batch_idx], pred_mask_list[batch_idx], true_overlayed_imgs_list[batch_idx], pred_overlayed_imgs_list[batch_idx], true_pred_overlayed_imgs_list[batch_idx], images_list[batch_idx], sigma_list[batch_idx] ,flows_list,
+                            rand_inds, kalman_flag=kalman_flag, flow_flag=args.flow_flag)          
+        else:            
+            log_tensorboard(writer, global_step, 'test', true_mask_list[batch_idx], pred_mask_list[batch_idx], true_overlayed_imgs_list[batch_idx], pred_overlayed_imgs_list[batch_idx], true_pred_overlayed_imgs_list[batch_idx], images_list[batch_idx], None ,flows_list,
+                            rand_inds, kalman_flag=kalman_flag, flow_flag=args.flow_flag) 
+
+
+        # iou_0, tp_by_all_positive_0, _ = iou(pred_mask_list[batch_idx:batch_idx+1], true_mask_list[batch_idx:batch_idx+1], kalman_flag=kalman_flag)
+        iou_0, tp_by_all_positive_0 = None, None #iou_0.item(), tp_by_all_positive_0.item()
         
     else:
         # rand_inds = range(imgs.shape[0])
+        # import ipdb; ipdb.set_trace()
         rand_inds= random.sample(range(len(images_list)), 20)
         log_tensorboard(writer, global_step, 'test', true_mask_list, pred_mask_list, true_overlayed_imgs_list, pred_overlayed_imgs_list, true_pred_overlayed_imgs_list, images_list, None ,flows_list,
                         rand_inds, kalman_flag, flow_flag=args.flow_flag)        
         iou_0, tp_by_all_positive_0 = None, None    
-        
+    
+    if vector_flag:
+        return epoch_loss, None, None, None, None, None, None, None
+
     return epoch_loss, avg_iou, iou_0, avg_tp_by_all_positive, tp_by_all_positive_0, avg_dice_score, avg_precision, avg_recall
 
 def train_net(net, args, **kwargs):
@@ -266,14 +334,23 @@ def train_net(net, args, **kwargs):
     flow_history_flag = args.flow_history_flag
     flow_flag = args.flow_flag
     kalman_flag = args.kalman_flag
+    vector_flag = args.vector_flag
+    
+    PARENT_FOLDER_TRAIN, LIST_OF_DATASETS_TRAIN, PARENT_FOLDER_TEST, LIST_OF_DATASETS_TEST, IMAGE_LOC, MASK_LOC = get_list_train_test_data(args.data_type)
+
     if not args.use_saved_data:
         # images_tensor, flows_tensor, needle_masks_tensor, masks_tensor, flow_concats_tensor = get_data(net.temporal_in_channel)
         if kalman_flag:
-            train_data = get_data_dict_kalman(LIST_OF_DATASETS_TRAIN, PARENT_FOLDER_TRAIN, saved_data_file, type='train', traj_len=args.traj_len)
-            test_data = get_data_dict_kalman(LIST_OF_DATASETS_TEST, PARENT_FOLDER_TEST, saved_data_file, 'test', traj_len=args.traj_len)
+            if vector_flag:
+                print("vector kalman filter")
+                train_data = get_data_dict_kalman_vec(PARENT_FOLDER_TRAIN, LIST_OF_DATASETS_TRAIN, IMAGE_LOC, MASK_LOC, saved_data_file, type='train', traj_len=args.traj_len, data_type=args.data_type)
+                test_data = get_data_dict_kalman_vec(PARENT_FOLDER_TEST, LIST_OF_DATASETS_TEST, IMAGE_LOC, MASK_LOC, saved_data_file, type='test', traj_len=args.traj_len, data_type=args.data_type)
+            else:
+                train_data = get_data_dict_kalman(PARENT_FOLDER_TRAIN, LIST_OF_DATASETS_TRAIN, IMAGE_LOC, MASK_LOC, saved_data_file, type='train', traj_len=args.traj_len, data_type=args.data_type)
+                test_data = get_data_dict_kalman(PARENT_FOLDER_TEST, LIST_OF_DATASETS_TEST, IMAGE_LOC, MASK_LOC, saved_data_file, type='test', traj_len=args.traj_len, data_type=args.data_type)
         else:
-            train_data, max_flow, min_flow = get_data_dict_history(n_flow, LIST_OF_DATASETS_TRAIN, PARENT_FOLDER_TRAIN, saved_data_file,'train',flow_history_flag, flow_flag)
-            test_data, _, _ = get_data_dict_history(n_flow, LIST_OF_DATASETS_TEST, PARENT_FOLDER_TEST, saved_data_file,'test', flow_history_flag, flow_flag, max_flow, min_flow)
+            train_data, max_flow, min_flow = get_data_dict_history(n_flow, PARENT_FOLDER_TRAIN, LIST_OF_DATASETS_TRAIN, IMAGE_LOC, MASK_LOC, saved_data_file,'train', args.data_type, flow_history_flag, flow_flag)
+            test_data, _, _ = get_data_dict_history(n_flow, PARENT_FOLDER_TEST, LIST_OF_DATASETS_TEST, IMAGE_LOC, MASK_LOC, saved_data_file,'test', args.data_type, flow_history_flag, flow_flag, max_flow, min_flow)
         # _data, max_flow, min_flow = get_data_dict_history(n_flow, LIST_OF_DATASETS_TRAIN, PARENT_FOLDER_TRAIN, saved_data_file,'all',flow_history_flag)
         
     else:
@@ -344,12 +421,15 @@ def train_net(net, args, **kwargs):
     
     # set criteria based on number of classes 
     n_classes = kwargs['n_classes']
-    if n_classes > 1:
-        criterion = nn.CrossEntropyLoss()
+    if vector_flag:
+        criterion = nn.MSELoss()
     else:
-        # criterion = nn.BCEWithLogitsLoss(pos_weight=torch.tensor(100)) #pos_weight=150
-        criterion = nn.BCEWithLogitsLoss() 
-        constrastive_criterion = ContrastiveLoss()
+        if n_classes > 1:
+            criterion = nn.CrossEntropyLoss()
+        else:
+            # criterion = nn.BCEWithLogitsLoss(pos_weight=torch.tensor(100)) #pos_weight=150
+            criterion = nn.BCEWithLogitsLoss() 
+            constrastive_criterion = ContrastiveLoss()
 
     #! TRAINING STARTS HERE
     min_val_score = float('inf')
@@ -366,6 +446,10 @@ def train_net(net, args, **kwargs):
                 imgs = data['images'] 
                 true_masks = data['needle_masks']
                 if kalman_flag:
+                    if vector_flag:
+                        needle_params = data['needle_params'] #x_start, y_start, needle_angle, needle_length, x_tip, y_tip
+                        needle_params = needle_params.to(device=device, dtype=mask_type)
+                        true_masks_new = data['needle_masks_new']
                     flows = None 
                     imgs_prev = None
                 elif flow_flag:
@@ -380,13 +464,26 @@ def train_net(net, args, **kwargs):
                         imgs_prev = imgs_prev.to(device=device, dtype=mask_type)
                     else:
                         imgs_prev = None
-
+                # import ipdb; ipdb.set_trace()
+                # print("true masks max = " , torch.max(true_masks))
                 imgs = imgs.to(device=device, dtype=mask_type)
                 true_masks = true_masks.to(device=device, dtype=mask_type)                
                 #! compute predictions
-                masks_pred, last_encoded_feature, x_spatial, x_temporal, flow = net(imgs,flows,imgs_prev) # flow in form of image 
+                masks_pred, mean, sigma, flow = net(imgs,flows,imgs_prev) # flow in form of image 
+                
                 #! compute loss
-                loss =  criterion(masks_pred, true_masks)
+                if vector_flag:
+                    # scale_needle_param = torch.tensor([1/256, 1/256, 1/(2*pi), 1/(256*(2**0.5))]).to(device)
+                    scale_needle_param = torch.tensor([256, 256, (2*pi), 256]).to(device)
+                    masks_pred  = masks_pred[:,:,:4]*scale_needle_param # 
+                    masks_true = needle_params[:,:,:4] # *scale_needle_param 
+                    loss = criterion(masks_pred, masks_true)
+                    x_start_error = torch.mean(torch.abs(needle_params[:,:,0] - masks_pred[:,:,0]))
+                    y_start_error = torch.mean(torch.abs(needle_params[:,:,1] - masks_pred[:,:,1]))
+                    angle_error = torch.mean(torch.abs(needle_params[:,:,2] - masks_pred[:,:,2]))
+                    length_error = torch.mean(torch.abs(needle_params[:,:,3] - masks_pred[:,:,3]))
+                else:
+                    loss =  criterion(masks_pred, true_masks)
                 # loss = sigmoid_focal_loss(masks_pred, true_masks, device)
                 
                 optimizer.zero_grad()
@@ -394,7 +491,7 @@ def train_net(net, args, **kwargs):
                 # nn.utils.clip_grad_value_(net.parameters(), 0.1) ## increasead from 0.1 to 0.5 BE MIndFUL OF this 
                 optimizer.step()
 
-                epoch_loss.append(loss.item())                                
+                epoch_loss.append(loss.item())
 
                 if tensorboard_flag:
                     writer.add_scalar('Loss/train', loss.item(), global_step)
@@ -419,18 +516,16 @@ def train_net(net, args, **kwargs):
                     net.eval()
                     val_score, avg_iou_eval, iou_0, avg_tp_by_all_positive, tp_by_all_positive_0, avg_dice_score, avg_precision, avg_recall = \
                                                 eval_net(writer, global_step, 
-                                                  net, test_data, n_classes, 
-                                                  criterion, constrastive_criterion, 
-                                                  kalman_flag, device, flow_flag=args.flow_flag, n_flow=args.n_flow)
+                                                  net, test_data, n_classes, criterion, device, args )
 
-                    if avg_iou_eval > max_eval_iou:
+                    if avg_iou_eval is not None and avg_iou_eval > max_eval_iou:
                         max_eval_iou = avg_iou_eval
                         if args.store_weights:
                             torch.save(net.state_dict(), os.path.join(dir_checkpoint, 'CP_best_iou.pth'))
-                    if avg_tp_by_all_positive > max_eval_tp_by_all_positive:
-                        max_eval_tp_by_all_positive = avg_tp_by_all_positive
-                        if args.store_weights:
-                            torch.save(net.state_dict(), os.path.join(dir_checkpoint, 'CP_best_tp_by_all_positive.pth'))
+                    # if avg_tp_by_all_positive > max_eval_tp_by_all_positive:
+                    #     max_eval_tp_by_all_positive = avg_tp_by_all_positive
+                    #     if args.store_weights:
+                    #         torch.save(net.state_dict(), os.path.join(dir_checkpoint, 'CP_best_tp_by_all_positive.pth'))
                     if val_score < min_val_score:
                         min_val_score = val_score
                         if args.store_weights:
@@ -447,44 +542,83 @@ def train_net(net, args, **kwargs):
                     logging.info('Validation Loss: {}'.format(val_score))
                     # log test scalars | #? NOTE THAT _avg implies over all data
                     writer.add_scalar('learning_rate', optimizer.param_groups[0]['lr'], global_step)
-                    writer.add_scalar('Loss/test', val_score, global_step)                    
-                    writer.add_scalar('Scalars/test_tp_by_all_positive_avg', avg_tp_by_all_positive, global_step)
-                    writer.add_scalar('Scalars/test_IOUAvg', avg_iou_eval, global_step)
-                    writer.add_scalar('Scalars/test_precision_avg', avg_precision, global_step)
-                    writer.add_scalar('Scalars/test_recall_avg', avg_recall, global_step)
-                    writer.add_scalar('Scalars/test_dice_score_avg', avg_dice_score, global_step)
-                    if iou_0 is not None:
-                        writer.add_scalar('IOU/test', iou_0, global_step)
-                        writer.add_scalar('tp_by_all_positive/test', tp_by_all_positive_0, global_step)
+                    writer.add_scalar('Loss/test', val_score, global_step)      
+                    if not vector_flag:              
+                        writer.add_scalar('Scalars/test_tp_by_all_positive_avg', avg_tp_by_all_positive, global_step)
+                        writer.add_scalar('Scalars/test_IOUAvg', avg_iou_eval, global_step)
+                        writer.add_scalar('Scalars/test_precision_avg', avg_precision, global_step)
+                        writer.add_scalar('Scalars/test_recall_avg', avg_recall, global_step)
+                        writer.add_scalar('Scalars/test_dice_score_avg', avg_dice_score, global_step)
+                        if iou_0 is not None:
+                            writer.add_scalar('IOU/test', iou_0, global_step)
+                            writer.add_scalar('tp_by_all_positive/test', tp_by_all_positive_0, global_step)
                     
                     if kalman_flag:
                         # only log from first batch as data in video form
                         imgs = imgs[0]
                         masks_pred = masks_pred[0]
                         true_masks = true_masks[0]
+                        if vector_flag:
+                            needle_param = needle_params[0]
+                            true_masks_new = true_masks_new[0]
 
-                    writer.add_images('train/images', imgs, global_step)                    
-                    
+                    writer.add_images('train/images', imgs, global_step)
+
                     if flow_flag:
                         writer.add_images('train/flows', flows[:,0:1,:,:], global_step)
-                    
-                    masks_pred_sigmoid = torch.sigmoid(masks_pred) 
-                    masks_pred_threshold = (masks_pred_sigmoid > 0.5).float()
-                    # find IOU of training data at batch 0, data size is SxCxHxW                    
-                    train_iou, train_tp_by_all_positive, _ = iou(masks_pred_threshold.unsqueeze(0), true_masks.unsqueeze(0), kalman_flag=kalman_flag)
-                    train_precision, train_recall = precision_recall(masks_pred_threshold.unsqueeze(0), true_masks.unsqueeze(0), kalman_flag=kalman_flag)
-                    train_dice_score = dice_score(masks_pred_threshold.unsqueeze(0), true_masks.unsqueeze(0), kalman_flag=kalman_flag)
-                    writer.add_scalar('Scalars/train_tp_by_all_positive_avg', train_tp_by_all_positive, global_step)
-                    writer.add_scalar('Scalars/train_IOUAvg', train_iou, global_step)
-                    writer.add_scalar('Scalars/train_precision_avg', train_precision, global_step)
-                    writer.add_scalar('Scalars/train_recall_avg', train_recall, global_step)
-                    writer.add_scalar('Scalars/train_dice_score_avg', train_dice_score, global_step)                    
-                    writer.add_images('train/mask_pred_sigmoid', masks_pred_sigmoid, global_step)
-                    writer.add_images('train/true_overlayed' ,torch.concat([imgs, 0.6*imgs + 0.4*true_masks, imgs], dim = 1), global_step)
-                    writer.add_images('train/pred_overlayed' ,torch.concat([imgs, 0.6*imgs + 0.4*masks_pred_threshold, imgs], dim = 1), global_step)
-                    writer.add_images('train/combined_overlayed' ,torch.concat([masks_pred_threshold, torch.zeros_like(imgs) , true_masks], dim = 1), global_step)
 
-            # log avg epoch_loss            
+                    if not vector_flag:
+                        masks_pred_sigmoid = torch.sigmoid(masks_pred) 
+                        masks_pred_threshold = (masks_pred_sigmoid > 0.5).float()                
+                        # find IOU of training data at batch 0, data size is SxCxHxW                    
+                        train_iou, train_tp_by_all_positive, _ = iou(masks_pred_threshold.unsqueeze(0), true_masks.unsqueeze(0), kalman_flag=kalman_flag)
+                        train_precision, train_recall = precision_recall(masks_pred_threshold.unsqueeze(0), true_masks.unsqueeze(0), kalman_flag=kalman_flag)
+                        train_dice_score = dice_score(masks_pred_threshold.unsqueeze(0), true_masks.unsqueeze(0), kalman_flag=kalman_flag)
+                        writer.add_scalar('Scalars/train_tp_by_all_positive_avg', train_tp_by_all_positive, global_step)
+                        writer.add_scalar('Scalars/train_IOUAvg', train_iou, global_step)
+                        writer.add_scalar('Scalars/train_precision_avg', train_precision, global_step)
+                        writer.add_scalar('Scalars/train_recall_avg', train_recall, global_step)
+                        writer.add_scalar('Scalars/train_dice_score_avg', train_dice_score, global_step)                    
+                        # writer.add_images('train/mask_pred_sigmoid', masks_pred_sigmoid, global_step)
+                        writer.add_images('train/true_overlayed' ,torch.concat([imgs, 0.6*imgs + 0.4*true_masks, imgs], dim = 1), global_step)
+                        writer.add_images('train/pred_overlayed' ,torch.concat([imgs, 0.6*imgs + 0.4*masks_pred_threshold, imgs], dim = 1), global_step)
+                        writer.add_images('train/combined_overlayed' ,torch.concat([masks_pred_threshold, torch.zeros_like(imgs) , true_masks], dim = 1), global_step)
+                        if sigma is not None:
+                            mean, sigma = mean[0], sigma[0] 
+                            mean_sigmoid = torch.sigmoid(mean)
+                            mean_threshold = (mean_sigmoid > 0.5).float()
+                            # for plotting colored 
+                            # im_color = cv2.applyColorMap(im_gray, cv2.COLORMAP_JET)
+
+                            sigma = sigma/torch.max(sigma) if torch.max(sigma) > 1 else sigma
+                            writer.add_images('train/mean', mean_threshold, global_step)
+                            writer.add_images('train/uncertainty', sigma, global_step)
+                    else:
+                        #? 0: x_start, 1: y_start, 2: needle_angle, 3: needle_length
+                        #draw circles based on x_start, y_start
+                        masks = torch.zeros_like(true_masks, dtype=torch.uint8).permute(0, 2, 3, 1).cpu().numpy()
+                        masks_pred = masks_pred.detach().cpu().numpy()
+                        masks_list = []                        
+                        for kk in range(masks.shape[0]): 
+                            x_tip = masks_pred[kk,0] + np.cos(masks_pred[kk,2])*masks_pred[kk,3]
+                            y_tip = masks_pred[kk,1] + np.sin(masks_pred[kk,2])*masks_pred[kk,3]
+                            # masks_ = cv2.circle(masks[kk], (int(round(masks_pred[kk,1])), int(round(masks_pred[kk,0]))), 3, (0, 0, 255), 2)
+                            # masks_ = cv2.circle(masks_, (int(round(y_tip)), int(round(x_tip))), 3, (0, 255, 0), 2)
+                            masks_ = cv2.line(np.concatenate([masks[kk]]*3, axis=-1), (int(round(masks_pred[kk,1])), int(round(masks_pred[kk,0]))), (int(round(y_tip)), int(round(x_tip))), (0,0,255), 5)
+                            masks_list.append(masks_)
+                        
+                        masks_list = torch.from_numpy(np.stack(masks_list, axis=0)).permute(0,3,1,2)
+                        writer.add_images('train/mask_pred_overlayed', masks_list + true_masks_new, global_step)
+                        writer.add_images('train/mask_pred', masks_list, global_step)
+                        writer.add_images('train/mask_true', true_masks, global_step)
+                        writer.add_images('train/mask_true_new', true_masks_new, global_step)
+                        writer.add_scalar('train/x_start_error', x_start_error, global_step)
+                        writer.add_scalar('train/y_start_error', y_start_error, global_step)
+                        writer.add_scalar('train/length_error', length_error, global_step)
+                        writer.add_scalar('train/angle_error', angle_error, global_step)
+
+
+            # log avg epoch_loss
             print("epoch loss : ", np.mean(epoch_loss))
             writer.add_scalar('Loss/Epoch_train', np.mean(epoch_loss), epoch)
         if args.store_weights:
@@ -541,6 +675,12 @@ def get_args():
     parser.add_argument('--traj_len', type=int, default=50, help='length of video sequence for kalman filter')
     parser.add_argument('--eval' , action='store_true', default=False, help='Run Validation for video')
     parser.add_argument('--flow_flag' , action='store_true', default=False, help='flag whether to use flow or not')
+    parser.add_argument('--gauss_flag', action='store_true', default=False, help='flag for using gaussian distribution inside Kalman')
+    parser.add_argument('--transformer_flag', action='store_true', default=False, help='flag for using tranformer for kalman gain')
+    parser.add_argument('--vector_flag', action='store_true', default=False, help='vector kalman filter')
+    parser.add_argument('--process_model_flag', action='store_true', default=False, help='generate next state using just process model')
+    parser.add_argument('--high_res_flag', action='store_true', default=False, help='generate next state using just process model')
+    parser.add_argument('--data_type', type=str, default='DARPA', help='one of the following: [DARPA, UPMC, BlueGel]')
 
     return parser.parse_args()
 
@@ -578,22 +718,25 @@ if __name__ == '__main__':
         # ipdb.set_trace()
         # for tag, value in net.named_parameters():
         #     print("tag = " , tag , "  " , value.requires_grad)
-
-    if args.load:
-        # to check weights : net.UNet.inc.weight
-        # net.load_state_dict(torch.load(args.load, map_location=device))
-        UNet_weights = torch.load(args.load, map_location=device)
-        for name, params in net.named_parameters():
-            if 'kalman' not in name:
-                params = UNet_weights[name]
-                # params.requires_grad = False 
-                
-        # print(net.UNet.inc.double_conv[0].weight[0])
-        logging.info(f'Model loaded from {args.load}')
-
     net.to(device=device)
     # faster convolutions, but more memory
     # cudnn.benchmark = True
+
+    if args.load:
+        # to check weights : net.UNet.inc.weight
+        weight_loc = os.path.join('checkpoints/exp', args.load,'CP_best_val_score.pth')
+        # if not args.kalman_flag:
+        #     net.load_state_dict(torch.load(args.load, map_location=device))
+        # else:
+        #     UNet_weights = torch.load(args.load, map_location=device)
+        #     for name, params in net.named_parameters():
+        #         if 'kalman' not in name:
+        #             params = UNet_weights[name]
+                    # params.requires_grad = False 
+        net.load_state_dict(torch.load(weight_loc, map_location=device))        
+        # print(net.UNet.inc.double_conv[0].weight[0])
+        logging.info(f'Model loaded from {args.load}')
+
 
     try:
         train_net(net= net, args= args, device=device, **kwargs)
