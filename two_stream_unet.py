@@ -2,21 +2,22 @@ import numpy as np
 import torch
 import torch.nn as nn 
 import torch.nn.functional as F
-from torchvision.models import resnet18, ResNet18_Weights
-from correlation_liteflownet import correlation
+from torchvision.models import resnet18, ResNet18_Weights, resnet34, ResNet34_Weights, resnet50, ResNet50_Weights
+# from correlation_liteflownet import correlation
 import getopt
 import sys
 import math
 from KalmanFilter import KalmanModel, ExtendedKalmanModel, KalmanNet
 from KalmanNetConv import *
 from LatentRNN import LSTMModel, LSTMModelEval
-from ResNet import ResNet, ResNet18
+from ResNet import ResNet, ResNet18, ResNet34, ResNet50
 import ipdb
 # from torchvision.models import resnet18, ResNet18_Weights
-from utils_RGB import *
+# from utils_RGB import *
 from einops import rearrange
 from einops.layers.torch import Rearrange
-
+from utils_two_stream_unet import init_weights_and_freeze
+from vit_seg_modelling import Transformer_ViT, get_b16_config, VisionTransformer
 # from LiteFlowNet import Network, backwarp #! dont call this copy the network
 # torch.manual_seed(10)
 torch.manual_seed(42)
@@ -75,262 +76,262 @@ class ContrastiveLoss(torch.nn.Module):
         return torch.sum(loss)/batch_size     
 
 
-class FlowNet(torch.nn.Module):
-    def __init__(self):
-        super().__init__()
+# class FlowNet(torch.nn.Module):
+#     def __init__(self):
+#         super().__init__()
 
-        class Features(torch.nn.Module):
-            def __init__(self):
-                super().__init__()
+#         class Features(torch.nn.Module):
+#             def __init__(self):
+#                 super().__init__()
 
-                self.netOne = torch.nn.Sequential(
-                    torch.nn.Conv2d(in_channels=3, out_channels=32, kernel_size=7, stride=1, padding=3),
-                    torch.nn.LeakyReLU(inplace=False, negative_slope=0.1)
-                )
+#                 self.netOne = torch.nn.Sequential(
+#                     torch.nn.Conv2d(in_channels=3, out_channels=32, kernel_size=7, stride=1, padding=3),
+#                     torch.nn.LeakyReLU(inplace=False, negative_slope=0.1)
+#                 )
 
-                self.netTwo = torch.nn.Sequential(
-                    torch.nn.Conv2d(in_channels=32, out_channels=32, kernel_size=3, stride=2, padding=1),
-                    torch.nn.LeakyReLU(inplace=False, negative_slope=0.1),
-                    torch.nn.Conv2d(in_channels=32, out_channels=32, kernel_size=3, stride=1, padding=1),
-                    torch.nn.LeakyReLU(inplace=False, negative_slope=0.1),
-                    torch.nn.Conv2d(in_channels=32, out_channels=32, kernel_size=3, stride=1, padding=1),
-                    torch.nn.LeakyReLU(inplace=False, negative_slope=0.1)
-                )
+#                 self.netTwo = torch.nn.Sequential(
+#                     torch.nn.Conv2d(in_channels=32, out_channels=32, kernel_size=3, stride=2, padding=1),
+#                     torch.nn.LeakyReLU(inplace=False, negative_slope=0.1),
+#                     torch.nn.Conv2d(in_channels=32, out_channels=32, kernel_size=3, stride=1, padding=1),
+#                     torch.nn.LeakyReLU(inplace=False, negative_slope=0.1),
+#                     torch.nn.Conv2d(in_channels=32, out_channels=32, kernel_size=3, stride=1, padding=1),
+#                     torch.nn.LeakyReLU(inplace=False, negative_slope=0.1)
+#                 )
 
-                self.netThr = torch.nn.Sequential(
-                    torch.nn.Conv2d(in_channels=32, out_channels=64, kernel_size=3, stride=2, padding=1),
-                    torch.nn.LeakyReLU(inplace=False, negative_slope=0.1),
-                    torch.nn.Conv2d(in_channels=64, out_channels=64, kernel_size=3, stride=1, padding=1),
-                    torch.nn.LeakyReLU(inplace=False, negative_slope=0.1)
-                )
+#                 self.netThr = torch.nn.Sequential(
+#                     torch.nn.Conv2d(in_channels=32, out_channels=64, kernel_size=3, stride=2, padding=1),
+#                     torch.nn.LeakyReLU(inplace=False, negative_slope=0.1),
+#                     torch.nn.Conv2d(in_channels=64, out_channels=64, kernel_size=3, stride=1, padding=1),
+#                     torch.nn.LeakyReLU(inplace=False, negative_slope=0.1)
+#                 )
 
-                self.netFou = torch.nn.Sequential(
-                    torch.nn.Conv2d(in_channels=64, out_channels=96, kernel_size=3, stride=2, padding=1),
-                    torch.nn.LeakyReLU(inplace=False, negative_slope=0.1),
-                    torch.nn.Conv2d(in_channels=96, out_channels=96, kernel_size=3, stride=1, padding=1),
-                    torch.nn.LeakyReLU(inplace=False, negative_slope=0.1)
-                )
+#                 self.netFou = torch.nn.Sequential(
+#                     torch.nn.Conv2d(in_channels=64, out_channels=96, kernel_size=3, stride=2, padding=1),
+#                     torch.nn.LeakyReLU(inplace=False, negative_slope=0.1),
+#                     torch.nn.Conv2d(in_channels=96, out_channels=96, kernel_size=3, stride=1, padding=1),
+#                     torch.nn.LeakyReLU(inplace=False, negative_slope=0.1)
+#                 )
 
-                self.netFiv = torch.nn.Sequential(
-                    torch.nn.Conv2d(in_channels=96, out_channels=128, kernel_size=3, stride=2, padding=1),
-                    torch.nn.LeakyReLU(inplace=False, negative_slope=0.1)
-                )
+#                 self.netFiv = torch.nn.Sequential(
+#                     torch.nn.Conv2d(in_channels=96, out_channels=128, kernel_size=3, stride=2, padding=1),
+#                     torch.nn.LeakyReLU(inplace=False, negative_slope=0.1)
+#                 )
 
-                self.netSix = torch.nn.Sequential(
-                    torch.nn.Conv2d(in_channels=128, out_channels=192, kernel_size=3, stride=2, padding=1),
-                    torch.nn.LeakyReLU(inplace=False, negative_slope=0.1)
-                )
+#                 self.netSix = torch.nn.Sequential(
+#                     torch.nn.Conv2d(in_channels=128, out_channels=192, kernel_size=3, stride=2, padding=1),
+#                     torch.nn.LeakyReLU(inplace=False, negative_slope=0.1)
+#                 )
 
-            def forward(self, x):
-                # x1 = self.netOne(x)
-                # print("input shape: " , x.shape , " with input shape: ", x1.shape) 
-                # print("increasing channels to input to 32 to match network")
-                x_ = torch.cat([x[:,0:1,:,:]]*32, dim=1)  # netTwo requires 32 channels as input 
-                x2 = self.netTwo(x_)
-                x3 = self.netThr(x2)
-                x4 = self.netFou(x3)
-                x5 = self.netFiv(x4)
-                x6 = self.netSix(x5)
-                return [x, x2, x3, x4, x5 ]
+#             def forward(self, x):
+#                 # x1 = self.netOne(x)
+#                 # print("input shape: " , x.shape , " with input shape: ", x1.shape) 
+#                 # print("increasing channels to input to 32 to match network")
+#                 x_ = torch.cat([x[:,0:1,:,:]]*32, dim=1)  # netTwo requires 32 channels as input 
+#                 x2 = self.netTwo(x_)
+#                 x3 = self.netThr(x2)
+#                 x4 = self.netFou(x3)
+#                 x5 = self.netFiv(x4)
+#                 x6 = self.netSix(x5)
+#                 return [x, x2, x3, x4, x5 ]
 
-        class Matching(torch.nn.Module):
-            def __init__(self, intLevel):
-                super().__init__()
+#         class Matching(torch.nn.Module):
+#             def __init__(self, intLevel):
+#                 super().__init__()
 
-                self.fltBackwarp = [ 0.0, 0.0, 10.0, 5.0, 2.5, 1.25, 0.625 ][intLevel] #! yeh kaha se aae?
+#                 self.fltBackwarp = [ 0.0, 0.0, 10.0, 5.0, 2.5, 1.25, 0.625 ][intLevel] #! yeh kaha se aae?
 
-                if intLevel != 2:
-                    self.netFeat = torch.nn.Sequential()
+#                 if intLevel != 2:
+#                     self.netFeat = torch.nn.Sequential()
 
-                elif intLevel == 2:
-                    self.netFeat = torch.nn.Sequential(
-                        torch.nn.Conv2d(in_channels=32, out_channels=64, kernel_size=1, stride=1, padding=0),
-                        torch.nn.LeakyReLU(inplace=False, negative_slope=0.1)
-                    )                
+#                 elif intLevel == 2:
+#                     self.netFeat = torch.nn.Sequential(
+#                         torch.nn.Conv2d(in_channels=32, out_channels=64, kernel_size=1, stride=1, padding=0),
+#                         torch.nn.LeakyReLU(inplace=False, negative_slope=0.1)
+#                     )                
 
-                if intLevel == 6:
-                    self.netUpflow = None
+#                 if intLevel == 6:
+#                     self.netUpflow = None
 
-                elif intLevel != 6:
-                    self.netUpflow = torch.nn.ConvTranspose2d(in_channels=2, out_channels=2, kernel_size=4, stride=2, padding=1, bias=False, groups=2)
+#                 elif intLevel != 6:
+#                     self.netUpflow = torch.nn.ConvTranspose2d(in_channels=2, out_channels=2, kernel_size=4, stride=2, padding=1, bias=False, groups=2)
 
 
-                if intLevel >= 4:
-                    self.netUpcorr = None
+#                 if intLevel >= 4:
+#                     self.netUpcorr = None
 
-                elif intLevel < 4:
-                    self.netUpcorr = torch.nn.ConvTranspose2d(in_channels=49, out_channels=49, kernel_size=4, stride=2, padding=1, bias=False, groups=49)
+#                 elif intLevel < 4:
+#                     self.netUpcorr = torch.nn.ConvTranspose2d(in_channels=49, out_channels=49, kernel_size=4, stride=2, padding=1, bias=False, groups=49)
 
-                self.netMain = torch.nn.Sequential(
-                    torch.nn.Conv2d(in_channels=49, out_channels=128, kernel_size=3, stride=1, padding=1),
-                    torch.nn.LeakyReLU(inplace=False, negative_slope=0.1),
-                    torch.nn.Conv2d(in_channels=128, out_channels=64, kernel_size=3, stride=1, padding=1),
-                    torch.nn.LeakyReLU(inplace=False, negative_slope=0.1),
-                    torch.nn.Conv2d(in_channels=64, out_channels=32, kernel_size=3, stride=1, padding=1),
-                    torch.nn.LeakyReLU(inplace=False, negative_slope=0.1),
-                    torch.nn.Conv2d(in_channels=32, out_channels=2, kernel_size=[ 0, 0, 7, 5, 5, 3, 3 ][intLevel], stride=1, padding=[ 0, 0, 3, 2, 2, 1, 1 ][intLevel])
-                )
+#                 self.netMain = torch.nn.Sequential(
+#                     torch.nn.Conv2d(in_channels=49, out_channels=128, kernel_size=3, stride=1, padding=1),
+#                     torch.nn.LeakyReLU(inplace=False, negative_slope=0.1),
+#                     torch.nn.Conv2d(in_channels=128, out_channels=64, kernel_size=3, stride=1, padding=1),
+#                     torch.nn.LeakyReLU(inplace=False, negative_slope=0.1),
+#                     torch.nn.Conv2d(in_channels=64, out_channels=32, kernel_size=3, stride=1, padding=1),
+#                     torch.nn.LeakyReLU(inplace=False, negative_slope=0.1),
+#                     torch.nn.Conv2d(in_channels=32, out_channels=2, kernel_size=[ 0, 0, 7, 5, 5, 3, 3 ][intLevel], stride=1, padding=[ 0, 0, 3, 2, 2, 1, 1 ][intLevel])
+#                 )
             
 
-            def forward(self, tenOne, tenTwo, tenFeaturesOne, tenFeaturesTwo, tenFlow):
-                tenFeaturesOne = self.netFeat(tenFeaturesOne) # only when intLevel = 2 = intLevel[0]
-                tenFeaturesTwo = self.netFeat(tenFeaturesTwo) # only when intLevel = 2 = intLevel[0]
+#             def forward(self, tenOne, tenTwo, tenFeaturesOne, tenFeaturesTwo, tenFlow):
+#                 tenFeaturesOne = self.netFeat(tenFeaturesOne) # only when intLevel = 2 = intLevel[0]
+#                 tenFeaturesTwo = self.netFeat(tenFeaturesTwo) # only when intLevel = 2 = intLevel[0]
 
-                if tenFlow is not None:
-                    tenFlow = self.netUpflow(tenFlow)               
+#                 if tenFlow is not None:
+#                     tenFlow = self.netUpflow(tenFlow)               
 
-                if tenFlow is not None:
-                    tenFeaturesTwo = backwarp(tenInput=tenFeaturesTwo, tenFlow=tenFlow * self.fltBackwarp)
+#                 if tenFlow is not None:
+#                     tenFeaturesTwo = backwarp(tenInput=tenFeaturesTwo, tenFlow=tenFlow * self.fltBackwarp)
 
-                if self.netUpcorr is None:
-                    tmp_ = correlation.FunctionCorrelation(tenOne=tenFeaturesOne, tenTwo=tenFeaturesTwo, intStride=1)
-                    ipdb.set_trace()
-                    tenCorrelation = torch.nn.functional.leaky_relu(input=correlation.FunctionCorrelation(tenOne=tenFeaturesOne, tenTwo=tenFeaturesTwo, intStride=1), negative_slope=0.1, inplace=False)
+#                 if self.netUpcorr is None:
+#                     tmp_ = correlation.FunctionCorrelation(tenOne=tenFeaturesOne, tenTwo=tenFeaturesTwo, intStride=1)
+#                     ipdb.set_trace()
+#                     tenCorrelation = torch.nn.functional.leaky_relu(input=correlation.FunctionCorrelation(tenOne=tenFeaturesOne, tenTwo=tenFeaturesTwo, intStride=1), negative_slope=0.1, inplace=False)
 
-                elif self.netUpcorr is not None:
-                    tenCorrelation = self.netUpcorr(torch.nn.functional.leaky_relu(input=correlation.FunctionCorrelation(tenOne=tenFeaturesOne, tenTwo=tenFeaturesTwo, intStride=2), negative_slope=0.1, inplace=False))
+#                 elif self.netUpcorr is not None:
+#                     tenCorrelation = self.netUpcorr(torch.nn.functional.leaky_relu(input=correlation.FunctionCorrelation(tenOne=tenFeaturesOne, tenTwo=tenFeaturesTwo, intStride=2), negative_slope=0.1, inplace=False))
 
-                return (tenFlow if tenFlow is not None else 0.0) + self.netMain(tenCorrelation)
-
-
-        class Subpixel(torch.nn.Module):
-            def __init__(self, intLevel):
-                super().__init__()
-
-                self.fltBackward = [ 0.0, 0.0, 10.0, 5.0, 2.5, 1.25, 0.625 ][intLevel]
-
-                if intLevel != 2:
-                    self.netFeat = torch.nn.Sequential()
-
-                elif intLevel == 2:
-                    self.netFeat = torch.nn.Sequential(
-                        torch.nn.Conv2d(in_channels=32, out_channels=64, kernel_size=1, stride=1, padding=0),
-                        torch.nn.LeakyReLU(inplace=False, negative_slope=0.1)
-                    )
+#                 return (tenFlow if tenFlow is not None else 0.0) + self.netMain(tenCorrelation)
 
 
-                self.netMain = torch.nn.Sequential(
-                    torch.nn.Conv2d(in_channels=[ 0, 0, 130, 130, 194, 258, 386 ][intLevel], out_channels=128, kernel_size=3, stride=1, padding=1),
-                    torch.nn.LeakyReLU(inplace=False, negative_slope=0.1),
-                    torch.nn.Conv2d(in_channels=128, out_channels=64, kernel_size=3, stride=1, padding=1),
-                    torch.nn.LeakyReLU(inplace=False, negative_slope=0.1),
-                    torch.nn.Conv2d(in_channels=64, out_channels=32, kernel_size=3, stride=1, padding=1),
-                    torch.nn.LeakyReLU(inplace=False, negative_slope=0.1),
-                    torch.nn.Conv2d(in_channels=32, out_channels=2, kernel_size=[ 0, 0, 7, 5, 5, 3, 3 ][intLevel], stride=1, padding=[ 0, 0, 3, 2, 2, 1, 1 ][intLevel])
-                )
-            # end
+#         class Subpixel(torch.nn.Module):
+#             def __init__(self, intLevel):
+#                 super().__init__()
 
-            def forward(self, tenOne, tenTwo, tenFeaturesOne, tenFeaturesTwo, tenFlow):
-                tenFeaturesOne = self.netFeat(tenFeaturesOne) # only when intLevel = 2 = intLevel[0]
-                tenFeaturesTwo = self.netFeat(tenFeaturesTwo) # only when intLevel = 2 = intLevel[0]
+#                 self.fltBackward = [ 0.0, 0.0, 10.0, 5.0, 2.5, 1.25, 0.625 ][intLevel]
 
-                if tenFlow is not None:
-                    tenFeaturesTwo = backwarp(tenInput=tenFeaturesTwo, tenFlow=tenFlow * self.fltBackward)
+#                 if intLevel != 2:
+#                     self.netFeat = torch.nn.Sequential()
+
+#                 elif intLevel == 2:
+#                     self.netFeat = torch.nn.Sequential(
+#                         torch.nn.Conv2d(in_channels=32, out_channels=64, kernel_size=1, stride=1, padding=0),
+#                         torch.nn.LeakyReLU(inplace=False, negative_slope=0.1)
+#                     )
+
+
+#                 self.netMain = torch.nn.Sequential(
+#                     torch.nn.Conv2d(in_channels=[ 0, 0, 130, 130, 194, 258, 386 ][intLevel], out_channels=128, kernel_size=3, stride=1, padding=1),
+#                     torch.nn.LeakyReLU(inplace=False, negative_slope=0.1),
+#                     torch.nn.Conv2d(in_channels=128, out_channels=64, kernel_size=3, stride=1, padding=1),
+#                     torch.nn.LeakyReLU(inplace=False, negative_slope=0.1),
+#                     torch.nn.Conv2d(in_channels=64, out_channels=32, kernel_size=3, stride=1, padding=1),
+#                     torch.nn.LeakyReLU(inplace=False, negative_slope=0.1),
+#                     torch.nn.Conv2d(in_channels=32, out_channels=2, kernel_size=[ 0, 0, 7, 5, 5, 3, 3 ][intLevel], stride=1, padding=[ 0, 0, 3, 2, 2, 1, 1 ][intLevel])
+#                 )
+#             # end
+
+#             def forward(self, tenOne, tenTwo, tenFeaturesOne, tenFeaturesTwo, tenFlow):
+#                 tenFeaturesOne = self.netFeat(tenFeaturesOne) # only when intLevel = 2 = intLevel[0]
+#                 tenFeaturesTwo = self.netFeat(tenFeaturesTwo) # only when intLevel = 2 = intLevel[0]
+
+#                 if tenFlow is not None:
+#                     tenFeaturesTwo = backwarp(tenInput=tenFeaturesTwo, tenFlow=tenFlow * self.fltBackward)
             
-                return (tenFlow if tenFlow is not None else 0.0) + self.netMain(torch.cat([ tenFeaturesOne, tenFeaturesTwo, tenFlow ], 1))
+#                 return (tenFlow if tenFlow is not None else 0.0) + self.netMain(torch.cat([ tenFeaturesOne, tenFeaturesTwo, tenFlow ], 1))
 
 
-        class Regularization(torch.nn.Module):
-            def __init__(self, intLevel):
-                super().__init__()
+#         class Regularization(torch.nn.Module):
+#             def __init__(self, intLevel):
+#                 super().__init__()
 
-                self.fltBackward = [ 0.0, 0.0, 10.0, 5.0, 2.5, 1.25, 0.625 ][intLevel]
+#                 self.fltBackward = [ 0.0, 0.0, 10.0, 5.0, 2.5, 1.25, 0.625 ][intLevel]
 
-                self.intUnfold = [ 0, 0, 7, 5, 5, 3, 3 ][intLevel]
+#                 self.intUnfold = [ 0, 0, 7, 5, 5, 3, 3 ][intLevel]
 
-                if intLevel >= 5:
-                    self.netFeat = torch.nn.Sequential()
+#                 if intLevel >= 5:
+#                     self.netFeat = torch.nn.Sequential()
 
-                elif intLevel < 5:
-                    self.netFeat = torch.nn.Sequential(
-                        torch.nn.Conv2d(in_channels=[ 0, 0, 32, 64, 96, 128, 192 ][intLevel], out_channels=128, kernel_size=1, stride=1, padding=0),
-                        torch.nn.LeakyReLU(inplace=False, negative_slope=0.1)
-                    )
+#                 elif intLevel < 5:
+#                     self.netFeat = torch.nn.Sequential(
+#                         torch.nn.Conv2d(in_channels=[ 0, 0, 32, 64, 96, 128, 192 ][intLevel], out_channels=128, kernel_size=1, stride=1, padding=0),
+#                         torch.nn.LeakyReLU(inplace=False, negative_slope=0.1)
+#                     )
 
-                self.netMain = torch.nn.Sequential(
-                    torch.nn.Conv2d(in_channels=[ 0, 0, 131, 131, 131, 131, 195 ][intLevel], out_channels=128, kernel_size=3, stride=1, padding=1),
-                    torch.nn.LeakyReLU(inplace=False, negative_slope=0.1),
-                    torch.nn.Conv2d(in_channels=128, out_channels=128, kernel_size=3, stride=1, padding=1),
-                    torch.nn.LeakyReLU(inplace=False, negative_slope=0.1),
-                    torch.nn.Conv2d(in_channels=128, out_channels=64, kernel_size=3, stride=1, padding=1),
-                    torch.nn.LeakyReLU(inplace=False, negative_slope=0.1),
-                    torch.nn.Conv2d(in_channels=64, out_channels=64, kernel_size=3, stride=1, padding=1),
-                    torch.nn.LeakyReLU(inplace=False, negative_slope=0.1),
-                    torch.nn.Conv2d(in_channels=64, out_channels=32, kernel_size=3, stride=1, padding=1),
-                    torch.nn.LeakyReLU(inplace=False, negative_slope=0.1),
-                    torch.nn.Conv2d(in_channels=32, out_channels=32, kernel_size=3, stride=1, padding=1),
-                    torch.nn.LeakyReLU(inplace=False, negative_slope=0.1)
-                )
+#                 self.netMain = torch.nn.Sequential(
+#                     torch.nn.Conv2d(in_channels=[ 0, 0, 131, 131, 131, 131, 195 ][intLevel], out_channels=128, kernel_size=3, stride=1, padding=1),
+#                     torch.nn.LeakyReLU(inplace=False, negative_slope=0.1),
+#                     torch.nn.Conv2d(in_channels=128, out_channels=128, kernel_size=3, stride=1, padding=1),
+#                     torch.nn.LeakyReLU(inplace=False, negative_slope=0.1),
+#                     torch.nn.Conv2d(in_channels=128, out_channels=64, kernel_size=3, stride=1, padding=1),
+#                     torch.nn.LeakyReLU(inplace=False, negative_slope=0.1),
+#                     torch.nn.Conv2d(in_channels=64, out_channels=64, kernel_size=3, stride=1, padding=1),
+#                     torch.nn.LeakyReLU(inplace=False, negative_slope=0.1),
+#                     torch.nn.Conv2d(in_channels=64, out_channels=32, kernel_size=3, stride=1, padding=1),
+#                     torch.nn.LeakyReLU(inplace=False, negative_slope=0.1),
+#                     torch.nn.Conv2d(in_channels=32, out_channels=32, kernel_size=3, stride=1, padding=1),
+#                     torch.nn.LeakyReLU(inplace=False, negative_slope=0.1)
+#                 )
 
-                if intLevel >= 5:
-                    self.netDist = torch.nn.Sequential(
-                        torch.nn.Conv2d(in_channels=32, out_channels=[ 0, 0, 49, 25, 25, 9, 9 ][intLevel], kernel_size=[ 0, 0, 7, 5, 5, 3, 3 ][intLevel], stride=1, padding=[ 0, 0, 3, 2, 2, 1, 1 ][intLevel])
-                    )
+#                 if intLevel >= 5:
+#                     self.netDist = torch.nn.Sequential(
+#                         torch.nn.Conv2d(in_channels=32, out_channels=[ 0, 0, 49, 25, 25, 9, 9 ][intLevel], kernel_size=[ 0, 0, 7, 5, 5, 3, 3 ][intLevel], stride=1, padding=[ 0, 0, 3, 2, 2, 1, 1 ][intLevel])
+#                     )
 
-                elif intLevel < 5:
-                    self.netDist = torch.nn.Sequential(
-                        torch.nn.Conv2d(in_channels=32, out_channels=[ 0, 0, 49, 25, 25, 9, 9 ][intLevel], kernel_size=([ 0, 0, 7, 5, 5, 3, 3 ][intLevel], 1), stride=1, padding=([ 0, 0, 3, 2, 2, 1, 1 ][intLevel], 0)),
-                        torch.nn.Conv2d(in_channels=[ 0, 0, 49, 25, 25, 9, 9 ][intLevel], out_channels=[ 0, 0, 49, 25, 25, 9, 9 ][intLevel], kernel_size=(1, [ 0, 0, 7, 5, 5, 3, 3 ][intLevel]), stride=1, padding=(0, [ 0, 0, 3, 2, 2, 1, 1 ][intLevel]))
-                    )
+#                 elif intLevel < 5:
+#                     self.netDist = torch.nn.Sequential(
+#                         torch.nn.Conv2d(in_channels=32, out_channels=[ 0, 0, 49, 25, 25, 9, 9 ][intLevel], kernel_size=([ 0, 0, 7, 5, 5, 3, 3 ][intLevel], 1), stride=1, padding=([ 0, 0, 3, 2, 2, 1, 1 ][intLevel], 0)),
+#                         torch.nn.Conv2d(in_channels=[ 0, 0, 49, 25, 25, 9, 9 ][intLevel], out_channels=[ 0, 0, 49, 25, 25, 9, 9 ][intLevel], kernel_size=(1, [ 0, 0, 7, 5, 5, 3, 3 ][intLevel]), stride=1, padding=(0, [ 0, 0, 3, 2, 2, 1, 1 ][intLevel]))
+#                     )
 
-                self.netScaleX = torch.nn.Conv2d(in_channels=[ 0, 0, 49, 25, 25, 9, 9 ][intLevel], out_channels=1, kernel_size=1, stride=1, padding=0)
-                self.netScaleY = torch.nn.Conv2d(in_channels=[ 0, 0, 49, 25, 25, 9, 9 ][intLevel], out_channels=1, kernel_size=1, stride=1, padding=0)
+#                 self.netScaleX = torch.nn.Conv2d(in_channels=[ 0, 0, 49, 25, 25, 9, 9 ][intLevel], out_channels=1, kernel_size=1, stride=1, padding=0)
+#                 self.netScaleY = torch.nn.Conv2d(in_channels=[ 0, 0, 49, 25, 25, 9, 9 ][intLevel], out_channels=1, kernel_size=1, stride=1, padding=0)
 
-            def forward(self, tenOne, tenTwo, tenFeaturesOne, tenFeaturesTwo, tenFlow):
-                tenDifference = (tenOne - backwarp(tenInput=tenTwo, tenFlow=tenFlow * self.fltBackward)).square().sum(1, True).sqrt().detach()
+#             def forward(self, tenOne, tenTwo, tenFeaturesOne, tenFeaturesTwo, tenFlow):
+#                 tenDifference = (tenOne - backwarp(tenInput=tenTwo, tenFlow=tenFlow * self.fltBackward)).square().sum(1, True).sqrt().detach()
 
-                tenDist = self.netDist(self.netMain(torch.cat([ tenDifference, tenFlow - tenFlow.view(tenFlow.shape[0], 2, -1).mean(2, True).view(tenFlow.shape[0], 2, 1, 1), self.netFeat(tenFeaturesOne) ], 1)))
-                tenDist = tenDist.square().neg()
-                tenDist = (tenDist - tenDist.max(1, True)[0]).exp()
+#                 tenDist = self.netDist(self.netMain(torch.cat([ tenDifference, tenFlow - tenFlow.view(tenFlow.shape[0], 2, -1).mean(2, True).view(tenFlow.shape[0], 2, 1, 1), self.netFeat(tenFeaturesOne) ], 1)))
+#                 tenDist = tenDist.square().neg()
+#                 tenDist = (tenDist - tenDist.max(1, True)[0]).exp()
 
-                tenDivisor = tenDist.sum(1, True).reciprocal()
+#                 tenDivisor = tenDist.sum(1, True).reciprocal()
 
-                tenScaleX = self.netScaleX(tenDist * F.unfold(input=tenFlow[:, 0:1, :, :], kernel_size=self.intUnfold, stride=1, padding=int((self.intUnfold - 1) / 2)).view_as(tenDist)) * tenDivisor
-                tenScaleY = self.netScaleY(tenDist * F.unfold(input=tenFlow[:, 1:2, :, :], kernel_size=self.intUnfold, stride=1, padding=int((self.intUnfold - 1) / 2)).view_as(tenDist)) * tenDivisor
+#                 tenScaleX = self.netScaleX(tenDist * F.unfold(input=tenFlow[:, 0:1, :, :], kernel_size=self.intUnfold, stride=1, padding=int((self.intUnfold - 1) / 2)).view_as(tenDist)) * tenDivisor
+#                 tenScaleY = self.netScaleY(tenDist * F.unfold(input=tenFlow[:, 1:2, :, :], kernel_size=self.intUnfold, stride=1, padding=int((self.intUnfold - 1) / 2)).view_as(tenDist)) * tenDivisor
 
-                return torch.cat([ tenScaleX, tenScaleY ], 1)
+#                 return torch.cat([ tenScaleX, tenScaleY ], 1)
 
-        self.netFeatures = Features()
-        self.netMatching = torch.nn.ModuleList([ Matching(intLevel) for intLevel in [ 2, 3, 4, 5, 6 ] ])
-        self.netSubpixel = torch.nn.ModuleList([ Subpixel(intLevel) for intLevel in [ 2, 3, 4, 5, 6 ] ])
-        self.netRegularization = torch.nn.ModuleList([ Regularization(intLevel) for intLevel in [ 2, 3, 4, 5, 6 ] ])
+#         self.netFeatures = Features()
+#         self.netMatching = torch.nn.ModuleList([ Matching(intLevel) for intLevel in [ 2, 3, 4, 5, 6 ] ])
+#         self.netSubpixel = torch.nn.ModuleList([ Subpixel(intLevel) for intLevel in [ 2, 3, 4, 5, 6 ] ])
+#         self.netRegularization = torch.nn.ModuleList([ Regularization(intLevel) for intLevel in [ 2, 3, 4, 5, 6 ] ])
 
-        self.load_state_dict({ strKey.replace('module', 'net'): tenWeight for strKey, tenWeight in torch.hub.load_state_dict_from_url(url='http://content.sniklaus.com/github/pytorch-liteflownet/network-' + arguments_strModel + '.pytorch', file_name='liteflownet-' + arguments_strModel).items() })    
+#         self.load_state_dict({ strKey.replace('module', 'net'): tenWeight for strKey, tenWeight in torch.hub.load_state_dict_from_url(url='http://content.sniklaus.com/github/pytorch-liteflownet/network-' + arguments_strModel + '.pytorch', file_name='liteflownet-' + arguments_strModel).items() })    
 
-    def forward(self, image1, image2):
-        #? subtract by 0.5 for US iamges ? 
-        # image1[:, 0, :, :] = image1[:, 0, :, :] #- 0.411618
-        # image1[:, 1, :, :] = image1[:, 1, :, :] #- 0.434631
-        # image1[:, 2, :, :] = image1[:, 2, :, :] #- 0.454253
+#     def forward(self, image1, image2):
+#         #? subtract by 0.5 for US iamges ? 
+#         # image1[:, 0, :, :] = image1[:, 0, :, :] #- 0.411618
+#         # image1[:, 1, :, :] = image1[:, 1, :, :] #- 0.434631
+#         # image1[:, 2, :, :] = image1[:, 2, :, :] #- 0.454253
 
-        # image2[:, 0, :, :] = image2[:, 0, :, :] #- 0.410782
-        # image2[:, 1, :, :] = image2[:, 1, :, :] #- 0.433645
-        # image2[:, 2, :, :] = image2[:, 2, :, :] #- 0.452793
-        image1 = torch.cat([image1]*3, dim=1)
-        image2 = torch.cat([image2]*3, dim=1)
-        features1 = self.netFeatures(image1) # first netry is OG image 
-        features2 = self.netFeatures(image2)
+#         # image2[:, 0, :, :] = image2[:, 0, :, :] #- 0.410782
+#         # image2[:, 1, :, :] = image2[:, 1, :, :] #- 0.433645
+#         # image2[:, 2, :, :] = image2[:, 2, :, :] #- 0.452793
+#         image1 = torch.cat([image1]*3, dim=1)
+#         image2 = torch.cat([image2]*3, dim=1)
+#         features1 = self.netFeatures(image1) # first netry is OG image 
+#         features2 = self.netFeatures(image2)
 
-        image1_list = [image1] 
-        image2_list = [image2] 
+#         image1_list = [image1] 
+#         image2_list = [image2] 
 
-        # creating list of OG images with different sizes based of feature size
-        for intLevel in [ 1, 2, 3, 4 ]:
-            # print("intlevel = " , intLevel)
-            image1_list.append(F.interpolate(input=image1_list[-1], size=(features1[intLevel].shape[2], features1[intLevel].shape[3]), mode='bilinear', align_corners=False))
-            image2_list.append(F.interpolate(input=image2_list[-1], size=(features2[intLevel].shape[2], features2[intLevel].shape[3]), mode='bilinear', align_corners=False))    
+#         # creating list of OG images with different sizes based of feature size
+#         for intLevel in [ 1, 2, 3, 4 ]:
+#             # print("intlevel = " , intLevel)
+#             image1_list.append(F.interpolate(input=image1_list[-1], size=(features1[intLevel].shape[2], features1[intLevel].shape[3]), mode='bilinear', align_corners=False))
+#             image2_list.append(F.interpolate(input=image2_list[-1], size=(features2[intLevel].shape[2], features2[intLevel].shape[3]), mode='bilinear', align_corners=False))    
 
-        flow = None
+#         flow = None
 
-        for intLevel in [-1, -2, -3, -4]: #[ -2, -3, -4, -5 ]:
-            # print("intLevel = " , intLevel)
-            intLevel_ = intLevel - 1
-            flow = self.netMatching[intLevel_](image1_list[intLevel], image2_list[intLevel], features1[intLevel], features2[intLevel], flow)            
-            flow = self.netSubpixel[intLevel_](image1_list[intLevel], image2_list[intLevel], features1[intLevel], features2[intLevel], flow)
-            flow = self.netRegularization[intLevel_](image1_list[intLevel], image2_list[intLevel], features1[intLevel], features2[intLevel], flow)
+#         for intLevel in [-1, -2, -3, -4]: #[ -2, -3, -4, -5 ]:
+#             # print("intLevel = " , intLevel)
+#             intLevel_ = intLevel - 1
+#             flow = self.netMatching[intLevel_](image1_list[intLevel], image2_list[intLevel], features1[intLevel], features2[intLevel], flow)            
+#             flow = self.netSubpixel[intLevel_](image1_list[intLevel], image2_list[intLevel], features1[intLevel], features2[intLevel], flow)
+#             flow = self.netRegularization[intLevel_](image1_list[intLevel], image2_list[intLevel], features1[intLevel], features2[intLevel], flow)
             
-        # return flow #* 20.0 
-        return flow, None 
+#         # return flow #* 20.0 
+#         return flow, None 
 
 class DoubleConv(nn.Module):
     """(convolution => [BN] => ReLU) * 2"""
@@ -447,15 +448,20 @@ class Up(nn.Module):
         return self.conv(x)
 
 class OutConv(nn.Module):
-    def __init__(self, in_channels, out_channels):
+    def __init__(self, in_channels, out_channels, encoder_type = None):
         super(OutConv, self).__init__()
-        # self.conv = nn.Sequential(
-        #                         nn.ConvTranspose2d(in_channels, in_channels, kernel_size=3),
-        #                         nn.ReLU(inplace=True),
-        #                         nn.Conv2d(in_channels, out_channels, kernel_size=1)
-        #             )
-        # needle case :
-        self.conv = nn.Conv2d(in_channels, out_channels, kernel_size=1)
+        if encoder_type == 'vanilla':
+            self.conv = nn.Conv2d(in_channels, out_channels, kernel_size=1)
+        elif encoder_type in ['resnet18', 'resnet34', 'hybrid']:
+            self.conv = nn.Sequential(
+                                    nn.ConvTranspose2d(in_channels, in_channels//2, kernel_size=5),
+                                    nn.ReLU(inplace=True),
+                                    nn.Conv2d(in_channels//2, out_channels, kernel_size=1)
+                                    )
+        # elif encoder_type == 'hybrid':
+        #     pass
+        else:
+            raise ValueError("encoder_type cannot be None")
 
     def forward(self, x):
         return self.conv(x)
@@ -491,22 +497,122 @@ class AttentionGate(nn.Module):
 
         return _out_conv
 
+class Encoder(nn.Module):
+    '''
+    class for different types of encoders: (i)Vanilla U-Net encoder, (ii)ResNet-50, (iii)Transformer + ResNet-50
+    '''
+    def __init__(self, args, **kwargs) -> None:
+        super(Encoder, self).__init__()
+        self.batch_size = args.batch_size
+        self.device = kwargs['device']
+        self.in_channels = kwargs['in_channels']
+        self.n_classes = kwargs['n_classes']
+        self.depth = kwargs['n_depth']
+        self.bilinear = kwargs['bilinear']
+
+        self.encoder_type = kwargs['encoder_type']
+
+        #*FLAGS
+        self.conv_layers = args.conv_layers
+
+        feature_size = kwargs['unet_channel_start'] # mostly 64
+        features = [feature_size*(2**i) for i in range(self.depth)]
+        self.features = features
+
+        if self.encoder_type == 'vanilla':
+            self.inc = DoubleConv(self.in_channels, features[0])
+            self.down1 = Down(features[0], features[1], self.conv_layers)
+            self.down2 = Down(features[1], features[2], self.conv_layers)
+            self.down3 = Down(features[2], features[3], self.conv_layers)
+            # self.down4 = Down(features[3], features[4], self.conv_layers)#extra
+        elif self.encoder_type in ['resnet18', 'resnet34']:
+            # channel_in for ResNet is fixed to 3 as we use pre-trained weights, adding an extra conv layer for mapping to 3 channels given any input channels
+            resnet_in_channel = 3
+            self.conv = nn.Conv2d(self.in_channels, resnet_in_channel, kernel_size=1,padding=0,stride=1)
+            if self.encoder_type == 'resnet18':
+                self.encoder = ResNet18()
+                pretrained_encoder_wgts = resnet18(weights=ResNet18_Weights.IMAGENET1K_V1) #* resnet has linear layers at end which we don't need so cannot use default pre-trained module
+            elif self.encoder_type == 'resnet34':
+                self.encoder = ResNet34()
+                pretrained_encoder_wgts = resnet34(weights=ResNet34_Weights.IMAGENET1K_V1) #* resnet has linear layers at end which we don't need a ResNet class and commented the linear layers            
+            
+            init_weights_and_freeze(self.encoder, pretrained_encoder_wgts, unfreeze_layers = None)
+            # for data in self.encoder.named_parameters():
+            #     print(data[0])
+            #     ipdb.set_trace()
+
+
+        elif self.encoder_type == 'resnet50':
+            #! using this will need change in number of channles for decoder to 4x, so not using this
+            resnet_in_channel = 3
+            self.conv = nn.Conv2d(self.in_channels, resnet_in_channel, kernel_size=1, padding=0,stride=1)
+            self.encoder = ResNet50()
+            pretrained_encoder_wgts = resnet50(weights=ResNet50_Weights.IMAGENET1K_V2)
+            init_weights_and_freeze(self.encoder, pretrained_encoder_wgts, unfreeze_layers = None)            
+            # pretrained_encoder_wgts = resnet50()
+
+        elif self.encoder_type == 'hybrid':
+            # call resnet18 and then last feature passed through ViT
+            resnet_in_channel = 3
+            self.conv = nn.Conv2d(self.in_channels, resnet_in_channel, kernel_size=1,padding=0,stride=1)
+            self.encoder = ResNet18()
+            pretrained_encoder_wgts = resnet18(weights=ResNet18_Weights.IMAGENET1K_V1) #* resnet has linear layers at end which we don't need a ResNet class and commented the linear layers
+            unfreeze_layers_encoder = None
+            # if not args.eval: | weights will be overwritten
+            init_weights_and_freeze(self.encoder, pretrained_encoder_wgts, unfreeze_layers = unfreeze_layers_encoder)
+            config = get_b16_config()
+            # self.transformer = Transformer_ViT(config, (32, 32)) #image_size = H, W of last encoder
+            self.transformer = VisionTransformer(config, (32, 32)) #image_size = H, W of last encoder
+            self.transformer.load_from(weights=np.load(config.pretrained_path))
+
+        else:
+            raise ValueError('encoder_type cannot be None')
+
+    def forward(self, inp, batch_size):
+        # batch_size different for train and eval 
+        if self.encoder_type == 'vanilla':
+            x0 = inp #[0:batch_size]
+            x1 = self.inc(x0)
+            x2 = self.down1(x1)
+            x3 = self.down2(x2)
+            x4 = self.down3(x3)
+
+        elif self.encoder_type in ['resnet18', 'resnet34']:
+            x0 = self.conv(inp)
+            out, features = self.encoder(x0)
+            x1,x2,x3,x4 = features[0], features[1], features[2], features[3]
+
+        elif self.encoder_type == 'resnet50':
+            pass
+            # x0 = self.conv(inp)
+            # out, features = self.encoder(x0)
+            # x1,x2,x3,x4 = features[0], features[1], features[2], features[3]
+        
+        elif self.encoder_type == 'hybrid':            
+            x0 = self.conv(inp)
+            out, features = self.encoder(x0)
+            x1,x2,x3,x4 = features[0], features[1], features[2], features[3]
+            x4, attn_weights,_ = self.transformer(x4)
+        
+        return x1,x2,x3,x4
+
+
 class UNet(nn.Module):
     '''
     Based off https://arxiv.org/pdf/1505.04597.pdf
 
-    the network expects an input of shape B x n_channels x H x W and outputs a segmentation mask without sigmoid  (sigmoid subsumed in BCEwithlogits) 
+    the network expects an input of shape B x in_channels x H x W and outputs a segmentation mask without sigmoid  (sigmoid subsumed in BCEwithlogits) 
     
-    n_channels depends on variant of input: 
+    in_channels depends on variant of input: 
     ***
-    some examples: only image then n_channels = 1 
-                   image and flow concatenated then n_channels = 2 
-                   image and flow added then n_channels = 1 
-                   pre-processing image and flow through conv2d, then n_channels = output of conv2d
+    some examples: only image then in_channels = 1 
+                   image and flow concatenated then in_channels = 2 
+                   image and flow added then in_channels = 1 
+                   pre-processing image and flow through conv2d, then in_channels = output of conv2d
     ***
 
     inputs: 
-            input channels : n_channels
+            input channels : in_channels
             # of classes to predict : n_classes 
             depth of network : n_depth
     input flags: 
@@ -518,12 +624,13 @@ class UNet(nn.Module):
     def __init__(self, args, **kwargs):
 
         super(UNet, self).__init__()
-        self.batch_size = args.batch_size
-        self.n_channels = kwargs['n_channels']
+        self.device = kwargs['device']
+
+        # self.batch_size = args.batch_size
+        self.in_channels = kwargs['in_channels']
         self.n_classes = kwargs['n_classes']
         self.depth = kwargs['n_depth']
         self.bilinear = kwargs['bilinear']
-        self.device = kwargs['device']
 
         self.classification_flag = args.classification_flag
         self.attention_flag = args.attention_flag
@@ -535,14 +642,11 @@ class UNet(nn.Module):
         features = [feature_size*(2**i) for i in range(self.depth)]
         self.features = features
 
-        self.inc = DoubleConv(self.n_channels, features[0])
-        self.down1 = Down(features[0], features[1], self.conv_layers)
-        self.down2 = Down(features[1], features[2], self.conv_layers)
-        self.down3 = Down(features[2], features[3], self.conv_layers)
-        self.down4 = Down(features[3], features[4], self.conv_layers)#extra
-        factor = 2 if self.bilinear else 1
+        self.encoder_type = kwargs['encoder_type']
+        self.encoder = Encoder(args, **kwargs)
 
-        self.up1 = Up(features[4], features[3] // factor, self.bilinear, self.conv_layers)#extra
+        factor = 2 if self.bilinear else 1
+        # self.up1 = Up(features[4], features[3] // factor, self.bilinear, self.conv_layers)#extra
         self.up2 = Up(features[3], features[2] // factor, self.bilinear, self.conv_layers)
         self.up3 = Up(features[2], features[1] // factor, self.bilinear, self.conv_layers)
         self.up4 = Up(features[1], features[0], self.bilinear, self.conv_layers)
@@ -553,44 +657,40 @@ class UNet(nn.Module):
             self.fc = nn.Linear(in_features_, 1) # only 2 classes 
         
         if self.attention_flag:
-            self.att10 = AttentionGate(features[4], features[3]) #extra
+            # self.att10 = AttentionGate(features[4], features[3]) #extra
             self.att11 = AttentionGate(features[3], features[2])
             self.att12 = AttentionGate(features[2], features[1])
             self.att13 = AttentionGate(features[1], features[0])
             
-            self.up1 = Up(features[3], features[3], self.bilinear, self.conv_layers, self.attention_flag)#extra
+            # self.up1 = Up(features[3], features[3], self.bilinear, self.conv_layers, self.attention_flag)#extra
             self.up2 = Up(features[2], features[2], self.bilinear, self.conv_layers, self.attention_flag)
             self.up3 = Up(features[1], features[1], self.bilinear, self.conv_layers, self.attention_flag)
             self.up4 = Up(features[0], features[0], self.bilinear, self.conv_layers, self.attention_flag)
 
-            if self.multi_attn > 0:
-                self.att21 = AttentionGate(features[3], features[2])
-                self.att22 = AttentionGate(features[2], features[1])
-                self.att23 = AttentionGate(features[1], features[0])
+            # if self.multi_attn > 0:
+            #     self.att21 = AttentionGate(features[3], features[2])
+            #     self.att22 = AttentionGate(features[2], features[1])
+            #     self.att23 = AttentionGate(features[1], features[0])
                 
-                self.att31 = AttentionGate(features[3], features[2])
-                self.att32 = AttentionGate(features[2], features[1])
-                self.att33 = AttentionGate(features[1], features[0])
+            #     self.att31 = AttentionGate(features[3], features[2])
+            #     self.att32 = AttentionGate(features[2], features[1])
+            #     self.att33 = AttentionGate(features[1], features[0])
 
-                self.att41 = AttentionGate(features[3], features[2])
-                self.att42 = AttentionGate(features[2], features[1])
-                self.att43 = AttentionGate(features[1], features[0])                                            
+            #     self.att41 = AttentionGate(features[3], features[2])
+            #     self.att42 = AttentionGate(features[2], features[1])
+            #     self.att43 = AttentionGate(features[1], features[0])                                            
 
-        self.outc = OutConv(features[0], self.n_classes)
+        self.outc = OutConv(features[0], self.n_classes, encoder_type = self.encoder_type)
 
-    def forward(self, x, batch_size=10, new_video_flag=False, gauss_flag=False):
+    def forward(self, inp, batch_size=10, new_video_flag=False, gauss_flag=False):
         '''
             x can contain multiple inputs from previous time-steps concatenated along batch so that 
             feature extraction can be done in parallel 
         '''
-        # prev_img = x[3*batch_size:4*batch_size].clone()        
-        _x = x[0:batch_size]
-        # import ipdb; ipdb.set_trace()
-        x1 = self.inc(_x)
-        x2 = self.down1(x1)
-        x3 = self.down2(x2)
-        x4 = self.down3(x3)   
-        # x5 = self.down4(x4)
+        # # prev_img = x[3*batch_size:4*batch_size].clone()        
+        # _x = inp[0:self.batch_size]
+        
+        x1, x2, x3, x4 = self.encoder(inp, batch_size)
 
         if self.attention_flag:
             # this will work for single image, need to change for multiple images as first attention mask would be different
@@ -598,7 +698,7 @@ class UNet(nn.Module):
                 _scale = self.multi_attn+1
 
                 #* downsample flow to different size 
-                _flow = x[batch_size:] #torch.flip(x[batch_size:], dim=0) #
+                _flow = inp[batch_size:] #torch.flip(x[batch_size:], dim=0) #
                 _flow_l1 = torch.cat([F.interpolate(_flow, scale_factor= 1)]*self.features[0], dim=1)
                 _flow_l2 = torch.cat([F.interpolate(_flow, scale_factor = 0.5)]*self.features[1], dim=1)
                 _flow_l3 = torch.cat([F.interpolate(_flow, scale_factor = 0.25)]*self.features[2], dim=1)
@@ -653,12 +753,18 @@ class UNet(nn.Module):
                 # y = self.up1(att_self0 * x4, None)#extra
 
                 att_self1 = self.att11(x4, x3)#replace y with x4
+                if x3.shape[-1] < att_self1.shape[-1]:
+                    att_self1 = att_self1[:,:,:x3.shape[-2],:x3.shape[-1]]
                 y = self.up2(att_self1 * x3, None)
 
                 att_self2 = self.att12(y, x2)
+                if x2.shape[-1] < att_self2.shape[-1]:
+                    att_self2 = att_self2[:,:,:x2.shape[-2],:x2.shape[-1]]
                 y = self.up3(att_self2 * x2, None)
 
                 att_self3 = self.att13(y, x1)
+                if x1.shape[-1] < att_self3.shape[-1]:
+                    att_self3 = att_self3[:,:,:x1.shape[-2],:x1.shape[-1]]                
                 y = self.up4(att_self3 * x1, None)
 
         else:
@@ -681,32 +787,34 @@ class UNetBKF(nn.Module):
     '''
     def __init__(self, args, **kwargs):
         super(UNetBKF, self).__init__()
-        self.batch_size = args.batch_size
-        self.n_channels = kwargs['n_channels']
-        self.n_classes = kwargs['n_classes']
-        self.depth = kwargs['n_depth']
-        self.bilinear = kwargs['bilinear']
         self.device = kwargs['device']
+
+        self.batch_size = args.batch_size
         self.kalman_flag = args.kalman_flag
-        self.classification_flag = args.classification_flag
-        self.attention_flag = args.attention_flag
-        self.multi_attn = args.multi_attn
         self.conv_layers = args.conv_layers
         self.gauss_flag = args.gauss_flag
         self.transformer_flag = args.transformer_flag
         self.high_res_flag = args.high_res_flag
 
+        self.in_channels = kwargs['in_channels']
+        self.unet_in_channels = kwargs['unet_in_channels']
+        self.n_classes = kwargs['n_classes']
+        self.depth = kwargs['n_depth']
+        self.bilinear = kwargs['bilinear']
+        self.encoder_type = kwargs['encoder_type']
+        self.recurrence_type = kwargs['recurrence_type']
 
         feature_size = kwargs['unet_channel_start']
         features = [feature_size*(2**i) for i in range(self.depth)] 
         self.features = features
         #* down sample (encoder)
-        self.inc = DoubleConv(self.n_channels, features[0])
-        self.down1 = Down(features[0], features[1], self.conv_layers)
-        self.down2 = Down(features[1], features[2], self.conv_layers)
-        self.down3 = Down(features[2], features[3], self.conv_layers)
-        # self.down4 = Down(features[3], features[4] // factor, self.conv_layers)
-        
+        # self.inc = DoubleConv(self.in_channels, features[0])
+        # self.down1 = Down(features[0], features[1], self.conv_layers)
+        # self.down2 = Down(features[1], features[2], self.conv_layers)
+        # self.down3 = Down(features[2], features[3], self.conv_layers)      
+        self.encoder_type = kwargs['encoder_type']
+        self.encoder = Encoder(args, **kwargs)
+
         factor = 2 if self.bilinear else 1
 
         # self.up1 = Up(features[4], features[3] // factor, self.bilinear, self.conv_layers)
@@ -715,44 +823,56 @@ class UNetBKF(nn.Module):
         self.up4 = Up(features[1], features[0], self.bilinear, self.conv_layers)
 
         #? final layer 
-        self.outc = OutConv(features[0], self.n_classes)        
+        self.outc = OutConv(features[0], self.n_classes, self.encoder_type)        
+        
         if args.eval == True:
-            if self.gauss_flag:
-                self.kalman_model = KalmanNetConvGaussVal(self.device, self.batch_size, kwargs['in_channels'], kwargs['height'], kwargs['width'], embed_channels=kwargs['kf_channels'])
+            if self.recurrence_type  == 'lstm':
+                self.kalman_model = LSTMModelEval(self.device, self.batch_size, self.unet_in_channels, kwargs['height'], kwargs['width'])
+            elif self.recurrence_type == 'conv_lstm':
+                self.kalman_model = ConvLSTMVal(self.device, self.unet_in_channels, kwargs['height'], kwargs['width'], hidden_dim=kwargs['kf_channels']) 
+            elif self.recurrence_type == 'conv_kalman':
+                self.kalman_model = KalmanNetConvVal(self.device, self.batch_size, self.unet_in_channels, kwargs['height'], kwargs['width'], embed_channels=kwargs['kf_channels'])
+            elif self.recurrence_type == 'conv_kalman_gauss':
+                self.kalman_model = KalmanNetConvGaussVal(self.device, self.batch_size, self.unet_in_channels, kwargs['height'], kwargs['width'], embed_channels=kwargs['kf_channels'])
             else:
-                self.kalman_model = KalmanNetConvVal(self.device, self.batch_size, kwargs['in_channels'], kwargs['height'], kwargs['width'], embed_channels=kwargs['kf_channels'])
-                # self.kalman_model = LSTMModelEval(self.device, self.batch_size, kwargs['in_channels'], kwargs['height'], kwargs['width'])
+                raise(ValueError, 'recurrence type incorrect')
             print("Running Evaluation Model")
+        
         else:
-            if self.gauss_flag:
-                self.kalman_model = KalmanNetConvGauss(self.device, self.batch_size, kwargs['in_channels'], kwargs['height'], kwargs['width'], embed_channels=kwargs['kf_channels'])
-            else:
-                self.kalman_model = KalmanNetConv(self.device, self.batch_size, kwargs['in_channels'], kwargs['height'], \
+            if self.recurrence_type == 'lstm':
+                self.kalman_model = LSTMModel(self.device, self.batch_size, self.unet_in_channels, kwargs['height'], kwargs['width'])
+            elif self.recurrence_type == 'conv_lstm':
+                self.kalman_model = ConvLSTM(self.device, self.unet_in_channels, kwargs['height'], kwargs['width'], hidden_dim=kwargs['kf_channels']) 
+            elif self.recurrence_type == 'conv_kalman':
+                self.kalman_model = KalmanNetConv(self.device, self.batch_size, self.unet_in_channels, kwargs['height'], \
                                                 kwargs['width'], embed_channels=kwargs['kf_channels'], transformer_flag=self.transformer_flag, high_res_flag = self.high_res_flag)
-                # self.kalman_model = LSTMModel(self.device, self.batch_size, kwargs['in_channels'], kwargs['height'], kwargs['width'])
+            elif self.recurrence_type == 'conv_kalman_gauss':
+                self.kalman_model = KalmanNetConvGauss(self.device, self.batch_size, self.unet_in_channels, kwargs['height'], kwargs['width'], embed_channels=kwargs['kf_channels'])
+            else:
+                raise(ValueError, 'recurrence type incorrect')
 
 
-    def forward(self, x, new_video_flag=False, gauss_flag=False, batch_size=10):
+    def forward(self, inp, new_video_flag=False, gauss_flag=False, batch_size=10):
         '''
             x can contain multiple inputs from previous time-steps concatenated along batch so that 
             feature extraction can be done in parallel 
             This needs the whole trajectory to be passed to the model
             Dims: B x T x C x H x W
         '''
-        # reshape input to B*T x C x H x W 
-        B, T, C, H, W = x.shape
-        x = x.view(-1, C, H, W)
+        # reshape input to B*T x C x H x W
+        B, T, C, H, W = inp.shape
+        inp = rearrange(inp, 'b t c h w -> (b t) c h w') #inp.view(-1, C, H, W)
         
-        x1 = self.inc(x)
-        x2 = self.down1(x1)
-        x3 = self.down2(x2)
-        x4 = self.down3(x3)   
+        # x1 = self.inc(x)
+        # x2 = self.down1(x1)
+        # x3 = self.down2(x2)
+        # x4 = self.down3(x3)
+        x1, x2, x3, x4 = self.encoder(inp, batch_size)   
 
         BT, C_, H_, W_ = x4.shape
-        
-        x4 = x4.view(B, T, C_, H_, W_)
+        x4 = x4.view(B, T, C_, H_, W_) #rearrange(x4, '(b t) c h w -> b t c h w', b = B, t = T) #x4.view(B, T, C_, H_, W_)
 
-        if self.gauss_flag:
+        if self.recurrence_type == 'conv_kalman_gauss':
             #* original + gauss 
             x4, x4_sigma = self.kalman_model(x4, new_video_flag=new_video_flag)
             x4 = x4.view(B*T, C_, H_, W_)
@@ -782,55 +902,52 @@ class UNetBKF(nn.Module):
         else:
             #* original 
             x4 = self.kalman_model(x4, new_video_flag=new_video_flag)
-            
+            # import ipdb; ipdb.set_trace()
             if self.high_res_flag:
                 x4 = x4.view(B*T, C_//2, 2*H_, 2*W_)
-            else:
-                x4 = x4.view(B*T, C_, H_, W_)
+            # else:
+                # x4 = rearrange(x4, 'b t c h w -> (b t) c h w') #x4.view(B*T, C_, H_, W_)
             y = self.up2(x4, x3, high_res_flag=self.high_res_flag)
             y = self.up3(y, x2)
             y = self.up4(y, x1)
-
-            # for plotting 
-            last_encoder_feature = None #nn.Upsample(size=(64,64), mode='bilinear')(x4)
 
             logits = self.outc(y)
             logits = logits.view(B, T, C, H, W)
 
             return logits, None, None
 
-    def forward_process_model(self, x, batch_size = 10, new_video_flag=False, gauss_flag=False):
-        '''
-        input: single image frame 
-        output: generate new state by forward propagation through process model only
-        output propagated through decoder block
-        '''
-        # reshape input to B*T x C x H x W 
-        B, T, C, H, W = x.shape #T = 1
-        x = x.view(-1, C, H, W)
+    # def forward_process_model(self, x, batch_size = 10, new_video_flag=False, gauss_flag=False):
+    #     '''
+    #     input: single image frame 
+    #     output: generate new state by forward propagation through process model only
+    #     output propagated through decoder block
+    #     '''
+    #     # reshape input to B*T x C x H x W 
+    #     B, T, C, H, W = x.shape #T = 1
+    #     x = x.view(-1, C, H, W)
         
-        x1 = self.inc(x)
-        x2 = self.down1(x1)
-        x3 = self.down2(x2)
-        x4 = self.down3(x3)   
+    #     x1 = self.inc(x)
+    #     x2 = self.down1(x1)
+    #     x3 = self.down2(x2)
+    #     x4 = self.down3(x3)   
         
-        BT, C_, H_, W_ = x4.shape
+    #     BT, C_, H_, W_ = x4.shape
         
-        #x4_list seq_len x 1 x C_ x H_ x W_
-        x4_list = self.kalman_model.process_model(x4, new_video_flag=new_video_flag)
+    #     #x4_list seq_len x 1 x C_ x H_ x W_
+    #     x4_list = self.kalman_model.process_model(x4, new_video_flag=new_video_flag)
     
-        # x4 = x4_list.view(B*T, C_, H_, W_)
-        B_ = x4_list.shape[0]
+    #     # x4 = x4_list.view(B*T, C_, H_, W_)
+    #     B_ = x4_list.shape[0]
 
-        y = self.up2(x4_list, torch.cat([x3]*B_, dim=0))        
-        y = self.up3(y, torch.cat([x2]*B_, dim=0))
-        y = self.up4(y, torch.cat([x1]*B_, dim=0))
+    #     y = self.up2(x4_list, torch.cat([x3]*B_, dim=0))        
+    #     y = self.up3(y, torch.cat([x2]*B_, dim=0))
+    #     y = self.up4(y, torch.cat([x1]*B_, dim=0))
 
-        logits = self.outc(y)
-        _, C_, H_, W_ = logits.shape
-        logits = logits.view(B_, 1, C_, H_, W_)
+    #     logits = self.outc(y)
+    #     _, C_, H_, W_ = logits.shape
+    #     logits = logits.view(B_, 1, C_, H_, W_)
 
-        return logits, None, None
+    #     return logits, None, None
 
 class TwoStreamUNet(nn.Module):
     '''
@@ -850,11 +967,11 @@ class TwoStreamUNet(nn.Module):
         super(TwoStreamUNet, self).__init__()
         assert args is not None, 'args cannot be None'
         
+        self.batch_size = args.batch_size
         self.pure_images_flag = args.pure_images
         self.temporal_in_channel = args.n_flow
         self.learned_flow = args.learned_flow
         self.multi_attn = args.multi_attn
-        self.batch_size = args.batch_size
         self.kalman_flag = args.kalman_flag
         self.flow_flag = args.flow_flag
         self.process_model_flag = args.process_model_flag
@@ -873,31 +990,31 @@ class TwoStreamUNet(nn.Module):
 
         if self.pure_images_flag:
             self.spatial_conv = DoubleConv(self.spatial_in_channel, self.out_channel) 
-            self.n_channels = self.out_channel 
+            self.in_channels = self.out_channel 
         elif self.flow_flag:
             self.spatial_conv = DoubleConv(self.spatial_in_channel, self.out_channel) 
             self.temporal_conv = DoubleConv(self.temporal_in_channel, self.out_channel) 
-            self.n_channels = self.out_channel
+            self.in_channels = self.out_channel
         else:
             if args.n_flow > 1:
-                self.n_channels = 1 + args.n_flow
+                self.in_channels = 1 + args.n_flow
             else:
-                self.n_channels = 1 #out_channel # 16 
+                self.in_channels = 1 #out_channel # 16 
         
         
         if self.kalman_flag:
-            in_channels =kwargs['unet_channel_start']*2**3 #256 #512 # channels of last encoded state UNet
+            unet_in_channels =kwargs['unet_channel_start']*2**3 # channels of last encoded state UNet
             height = 32 #this is 256/(2**3) height of last encoded state UNet
             width = 32 # width of last encoded state UNet
-            B = self.batch_size
+            
             if self.vector_flag:
-                self.UNet = UNetVectorKF(args, n_channels=self.n_channels, in_channels=in_channels, height=height, width=width, **kwargs)
+                self.UNet = UNetVectorKF(args, in_channels=self.in_channels, unet_in_channels=unet_in_channels, height=height, width=width, **kwargs)
                 if args.eval:
-                    self.UNet = UNetVectorKFEval(args, n_channels=self.n_channels, in_channels=in_channels, height=height, width=width, **kwargs)
+                    self.UNet = UNetVectorKFEval(args, in_channels=self.in_channels, unet_in_channels=unet_in_channels, height=height, width=width, **kwargs)
             else:
-                self.UNet = UNetBKF(args,n_channels=self.n_channels, in_channels=in_channels, height=height, width=width,**kwargs)
+                self.UNet = UNetBKF(args, in_channels=self.in_channels, unet_in_channels=unet_in_channels, height=height, width=width,**kwargs)
         else:
-            self.UNet = UNet(args, n_channels=self.n_channels, **kwargs)
+            self.UNet = UNet(args, in_channels=self.in_channels, **kwargs)
 
     def forward(self, image, flow=None, image_prev=None, new_video_flag = False):
         '''
@@ -934,11 +1051,11 @@ class TwoStreamUNet(nn.Module):
             image = x_spatial + x_temporal #torch.cat([x_spatial, x_temporal], dim=1)
 
         else:
-            # kalman_flag, attention_flag, 
+            # no flag, kalman_flag, attention_flag, 
             batch_size = image.shape[0]
             flow=None
-            x_spatial = torch.zeros(10,32,128,128)
-            x_temporal = torch.zeros(10,32,128,128)
+            # x_spatial = torch.zeros(10,32,128,128)
+            # x_temporal = torch.zeros(10,32,128,128)
 
             if self.multi_attn > 0:
                 channels = image_prev.shape[1] #  should be same as multi_attn

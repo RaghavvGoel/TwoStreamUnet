@@ -46,7 +46,7 @@ def get_weights(named_parameters):
     return list of params 
     '''
     weights_list = []
-    for name, param in named_parameters.named_parameters():
+    for name, param in named_parameters:
         weights_list.append(param)
     
     return weights_list
@@ -408,7 +408,7 @@ def get_data_dict_kalman(PARENT_FOLDER, LIST_OF_DATASETS, IMAGE_LOC, MASK_LOC, s
         if len(image_list) < traj_len:
             print("# of frames < {} ".format(traj_len))
         else:
-            step_gap = traj_len
+            step_gap = traj_len-2 #traj_len//2
             # for i in range(0,len(image_list),traj_len):
             for i in range(0,len(image_list),step_gap):
                 idx = min(i+traj_len, len(image_list))
@@ -441,6 +441,7 @@ def find_needle_params(mask):
         mask = mask.numpy()*255
         mask = mask.astype(np.uint8)
 
+    ipdb.set_trace()
     idx = np.where(mask[:,:,0] == 255)
     idx_y_min = np.where(idx[1] == np.min(idx[1]))
     idx_y_max = np.where(idx[1] == np.max(idx[1]))
@@ -470,7 +471,7 @@ def find_needle_params(mask):
     x_start, y_start = x_min, y_min
     x_tip, y_tip = x_max, y_max
 
-    return mask_new, [x_start, y_start, needle_angle, needle_length, x_tip, y_tip]
+    return mask_new, (x_start, y_start, needle_angle, needle_length, x_tip, y_tip)
 
 def get_data_dict_kalman_vec(PARENT_FOLDER, LIST_OF_DATASETS, IMAGE_LOC, MASK_LOC, saved_data_file, type='train', traj_len=20, data_type=None, repeat_flag=True):
     #! Vector DATA 
@@ -902,55 +903,67 @@ def get_list_train_test_data(data_type):
         IMAGE_LOC  = 'JPEGImages'
         MASK_LOC = 'SegmentationClass'
 
+        set1 = [
+                'task_negatives_136-2022_04_21_17_19_17-segmentation mask 1.1', #623
+                'task_positives_11-2022_04_12_18_28_14-segmentation mask 1.1',  #596
+                'task_positives_189-2022_04_12_18_32_54-segmentation mask 1.1', #152            
+            ]
+        
+        set2 = [
+                'task_positives_153-2022_04_12_18_32_22-segmentation mask 1.1', #595
+                'task_positives_193-2022_04_18_19_26_03-segmentation mask 1.1', #570
+                'task_positives_240-2022_04_22_19_59_15-segmentation mask 1.1', #359
+            ]
+
+        set3 = [
+                'task_positives_94-2022_04_19_22_08_47-segmentation mask 1.1', #499
+                'task_positives_222-2022_04_19_22_31_15-segmentation mask 1.1', #227
+                'task_positives_134-2022_04_12_18_31_26-segmentation mask 1.1', #571
+                'task_negatives_189-2022_04_12_18_48_43-segmentation mask 1.1', #208            
+            ]
+        
+        set4 = [
+                'task_negatives_191-2022_04_12_18_49_18-segmentation mask 1.1', #191
+                'task_negatives_179-2022_04_12_18_47_47-segmentation mask 1.1', #500
+                'task_positives_93-2022_04_12_18_28_39-segmentation mask 1.1', #301                       
+                'task_negatives_238-2022_04_12_18_51_42-segmentation mask 1.1' #221            
+            ]
+        
+        set5 = [
+                'task_positives_205-2022_04_21_17_04_12-segmentation mask 1.1', #647
+                'task_negatives_204-2022_04_08_16_58_31-segmentation mask 1.1', #320
+                'task_positives_67-2022_04_18_19_11_58-segmentation mask 1.1' #370            
+            ]
+
+        LIST_OF_DATASETS_TRAIN = set1 + set2 + set3 +set4
+        LIST_OF_DATASETS_TEST = set5
+
         # LIST_OF_DATASETS_TRAIN = [
-        #                         'task_negatives_136-2022_04_21_17_19_17-segmentation mask 1.1',
-        #                         'task_positives_11-2022_04_12_18_28_14-segmentation mask 1.1',
-        #                         'task_positives_153-2022_04_12_18_32_22-segmentation mask 1.1',
-        #                         'task_positives_189-2022_04_12_18_32_54-segmentation mask 1.1',
-        #                         'task_positives_193-2022_04_18_19_26_03-segmentation mask 1.1',
-        #                         'task_positives_222-2022_04_19_22_31_15-segmentation mask 1.1',
-        #                         'task_positives_94-2022_04_19_22_08_47-segmentation mask 1.1',
-        #                         'task_positives_134-2022_04_12_18_31_26-segmentation mask 1.1',
-        #                         'task_negatives_191-2022_04_12_18_49_18-segmentation mask 1.1',
-        #                         'task_positives_240-2022_04_22_19_59_15-segmentation mask 1.1',
-        #                         'task_negatives_189-2022_04_12_18_48_43-segmentation mask 1.1',
-        #                         'task_negatives_179-2022_04_12_18_47_47-segmentation mask 1.1',
-        #                         'task_positives_205-2022_04_21_17_04_12-segmentation mask 1.1'
+        #                         'task_negatives_136-2022_04_21_17_19_17-segmentation mask 1.1', #623
+        #                         'task_positives_11-2022_04_12_18_28_14-segmentation mask 1.1',  #596
+        #                         'task_positives_189-2022_04_12_18_32_54-segmentation mask 1.1', #152
+
+        #                         'task_positives_153-2022_04_12_18_32_22-segmentation mask 1.1', #595
+        #                         'task_positives_193-2022_04_18_19_26_03-segmentation mask 1.1', #570
+        #                         'task_positives_240-2022_04_22_19_59_15-segmentation mask 1.1', #359
+        
+        #                         'task_positives_94-2022_04_19_22_08_47-segmentation mask 1.1', #499
+        #                         'task_positives_222-2022_04_19_22_31_15-segmentation mask 1.1', #227
+        #                         'task_positives_134-2022_04_12_18_31_26-segmentation mask 1.1', #571
+        #                         'task_negatives_189-2022_04_12_18_48_43-segmentation mask 1.1', #208
+        
+        #                         'task_negatives_191-2022_04_12_18_49_18-segmentation mask 1.1', #191
+        #                         'task_negatives_179-2022_04_12_18_47_47-segmentation mask 1.1', #500
+        #                         'task_positives_93-2022_04_12_18_28_39-segmentation mask 1.1', #301                       
+        #                         'task_negatives_238-2022_04_12_18_51_42-segmentation mask 1.1' #221
         #                         ]
 
         # LIST_OF_DATASETS_TEST = [
-        #                         'task_positives_93-2022_04_12_18_28_39-segmentation mask 1.1',                        
-        #                         'task_negatives_204-2022_04_08_16_58_31-segmentation mask 1.1',
-        #                         'task_positives_67-2022_04_18_19_11_58-segmentation mask 1.1'
+        #                         'task_positives_205-2022_04_21_17_04_12-segmentation mask 1.1' #647
+        #                         'task_negatives_204-2022_04_08_16_58_31-segmentation mask 1.1', #320
+        #                         'task_positives_67-2022_04_18_19_11_58-segmentation mask 1.1' #370
         #                         ]
         
-        #* CROSS 1
-        LIST_OF_DATASETS_TRAIN = [
-                                'task_negatives_136-2022_04_21_17_19_17-segmentation mask 1.1',
-                                'task_positives_11-2022_04_12_18_28_14-segmentation mask 1.1',
-                                'task_positives_153-2022_04_12_18_32_22-segmentation mask 1.1',
-                                'task_positives_189-2022_04_12_18_32_54-segmentation mask 1.1',
-                                'task_positives_193-2022_04_18_19_26_03-segmentation mask 1.1',
-                                'task_positives_222-2022_04_19_22_31_15-segmentation mask 1.1',
-                                'task_positives_94-2022_04_19_22_08_47-segmentation mask 1.1',
-                                'task_positives_134-2022_04_12_18_31_26-segmentation mask 1.1',
-                                'task_negatives_191-2022_04_12_18_49_18-segmentation mask 1.1',
-                                # 'task_positives_240-2022_04_22_19_59_15-segmentation mask 1.1', # moved to test
-                                'task_negatives_189-2022_04_12_18_48_43-segmentation mask 1.1',
-                                'task_negatives_179-2022_04_12_18_47_47-segmentation mask 1.1',
-                                'task_positives_205-2022_04_21_17_04_12-segmentation mask 1.1', #! this is test dataset
-                                'task_negatives_204-2022_04_08_16_58_31-segmentation mask 1.1' ,
-                                'task_positives_93-2022_04_12_18_28_39-segmentation mask 1.1',
-                                ]
-
-        LIST_OF_DATASETS_TEST = [
-                                'task_positives_240-2022_04_22_19_59_15-segmentation mask 1.1',
-                                'task_negatives_179-2022_04_12_18_47_47-segmentation mask 1.1',
-                                'task_positives_67-2022_04_18_19_11_58-segmentation mask 1.1'
-                                ]
-
-
-
 
     elif data_type == 'BlueGel':
         PARENT_FOLDER_TRAIN = 'new_dataset/BlueGelData' 
@@ -1007,6 +1020,14 @@ def get_list_train_test_data(data_type):
     return PARENT_FOLDER_TRAIN,LIST_OF_DATASETS_TRAIN, PARENT_FOLDER_TEST, LIST_OF_DATASETS_TEST, IMAGE_LOC, MASK_LOC
 
 
+def init_weights_and_freeze(encoder, pretrained_encoder_wgts, unfreeze_layers = None):
+    # initialize network with pre=trained weights 
+    # update weights during training so no need to freeze any layer
+
+    for data1,data2 in zip(encoder.named_parameters(), pretrained_encoder_wgts.named_parameters()):
+        data1[1].data = data2[1].data
+        
+    print("pretrained weights copied")
 
 if __name__ == '__main__':
 

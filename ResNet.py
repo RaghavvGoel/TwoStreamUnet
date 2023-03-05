@@ -9,7 +9,7 @@ Reference:
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-
+import ipdb
 
 class BasicBlock(nn.Module):
     expansion = 1
@@ -30,6 +30,7 @@ class BasicBlock(nn.Module):
 
     def forward(self, x):
         out = F.relu(self.bn1(self.conv1(x)))
+        # out = self.bn1(self.conv1(x))
         out = self.bn2(self.conv2(out))
         out += self.shortcut(x)
         out = F.relu(out)
@@ -93,9 +94,10 @@ class ResNet(nn.Module):
 
     def forward(self, x):
         # print("x.shape = ", x.shape)
+        # ipdb.set_trace()
         features = []
         out = F.relu(self.bn1(self.conv1(x))) # 64 x 220 x 220
-        # print("out1: ", out.shape)
+        # print("out1: ", out.shape) #* can choose either out1 or out2 for skip connection
         # features.append(out)
 
         out = self.layer1(out) # 64 x 220 x 220
@@ -111,8 +113,8 @@ class ResNet(nn.Module):
         features.append(out)
         
         out = self.layer4(out) # 512 x 28 x 28
-        features.append(out)
         # print("out5: ", out.shape)
+        features.append(out)
 
         out = F.avg_pool2d(out, 4) # 512 x 7 x 7
         # features.append(out)

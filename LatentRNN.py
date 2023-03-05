@@ -23,12 +23,13 @@ class EncoderObservation(nn.Module):
 
     def forward(self, x):
         '''
-        x -> last encoded state of UNet
+        x -> size is B,T,C,H,W 
+            last encoded state of UNet
         '''              
         B, T, C, H, W = x.shape
         x = x.view(-1, C, H, W)
         x_conv = self.embedding_conv(x)
-        x_conv = x_conv.view(B*T, -1)
+        x_conv = x_conv.view(B*T, -1) #flatten
         x_emb_z = self.embedding_z(x_conv)
         x_emb_z = x_emb_z.view(B, T, self.state_dim)
         return x_emb_z
@@ -97,12 +98,14 @@ class LSTMModel(nn.Module):
         @param: z_t: measurements array for the whole trajectory
         @returns: y_outs: mean outputs for all times 
         '''
+        _,_,C,H,W = x.shape
+
         z = self.encoder(x)  
         
         out, (_,_) = self.lstm(z)
 
-        x_estimate = self.decoder(out)
-        
+        x_estimate = self.decoder(out) # size of x_estimate is [B,T,C,H,W] change to [BT,C,H,W]
+        x_estimate = x_estimate.view(-1, C,H,W)
         return x_estimate
 
 class LSTMModelEval(LSTMModel):
@@ -141,15 +144,19 @@ class LSTMModelEval(LSTMModel):
         @param: z_t: measurements array for the whole trajectory
         @returns: y_outs: mean outputs for all times 
         '''
+        _,_,C,H,W = x.shape
+
         if new_video_flag:
             self.h = torch.zeros(1, 1, self.state_dim, device=self.device)
             self.c = torch.zeros(1, 1, self.state_dim, device=self.device)
+            return x.view(-1, C, H, W)
 
         z = self.encoder(x)  
         
         out, (self.h,self.c) = self.lstm(z, (self.h,self.c))
 
         x_estimate = self.decoder(out)
-        
+        x_estimate = x_estimate.reshape(-1, C, H, W)
+
         return x_estimate
 

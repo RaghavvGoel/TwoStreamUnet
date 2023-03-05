@@ -90,6 +90,8 @@ def eval_net_stacked(writer, global_step, net, test_data, n_classes, criterion, 
             mask_type = torch.float32 #if n_classes == 1 else torch.long                
             imgs = data['images'] 
             true_masks = data['needle_masks']
+            flows = None #data['flow_concats']                      
+            imgs_prev = None #data['images_prev']
             if args.flow_flag:
                 imgs_prev = data['images_prev']
                 flows = data['flow_concats']                     
@@ -98,13 +100,10 @@ def eval_net_stacked(writer, global_step, net, test_data, n_classes, criterion, 
                 imgs = imgs.to(device=device, dtype=mask_type).unsqueeze(0).unsqueeze(0)
                 true_masks = true_masks.to(device=device, dtype=mask_type).unsqueeze(0).unsqueeze(0)
             else:
-                flows = None #data['flow_concats']                      
                 if args.n_flow > 1:
                     imgs_prev = data['images_prev']
                     imgs_prev = imgs_prev.to(device=device, dtype=mask_type).unsqueeze(0)
-                else:
-                    imgs_prev = None #data['images_prev']
-                
+
                 imgs = imgs.to(device=device, dtype=mask_type).unsqueeze(0)
                 true_masks = true_masks.to(device=device, dtype=mask_type).unsqueeze(0)
             
@@ -138,7 +137,6 @@ def eval_net_stacked(writer, global_step, net, test_data, n_classes, criterion, 
             
             imgs = imgs.to('cpu') 
             true_masks = true_masks.to('cpu') 
-        
             masks_pred = masks_pred.to( 'cpu')
             masks_pred_threshold = masks_pred_threshold.to( 'cpu')                
 
@@ -177,8 +175,7 @@ def eval_net_stacked(writer, global_step, net, test_data, n_classes, criterion, 
 
 
 def find_needle_params(mask):
-    ipdb.set_trace()
-    
+    # ipdb.set_trace()
     idx = np.where(mask == 1)
 
     if len(idx[0]) == 0:
@@ -187,8 +184,8 @@ def find_needle_params(mask):
     idx_y_min = np.where(idx[1] == np.min(idx[1]))
     idx_y_max = np.where(idx[1] == np.max(idx[1]))
 
-    print("idx_y_min = ", idx_y_min)
-    print("idx_y_max = ", idx_y_max)
+    # print("idx_y_min = ", idx_y_min)
+    # print("idx_y_max = ", idx_y_max)
 
 
     x_max = np.max(idx[0][idx_y_max])
@@ -203,8 +200,8 @@ def find_needle_params(mask):
         x_min, x_max = x_max, x_min
         y_min, y_max = y_max, y_min
         
-    print("min x = {}, min y = {}".format(x_min, y_min))
-    print("max x = {}, max y = {}".format(x_max, y_max))
+    # print("min x = {}, min y = {}".format(x_min, y_min))
+    # print("max x = {}, max y = {}".format(x_max, y_max))
     # make circle on the min and max : image will be 3 channel     
     mask_new = cv2.circle(mask, (y_min, x_min), 3, (0, 0, 255), 2)
     mask_new = cv2.circle(mask, (y_max, x_max), 3, (0, 255, 0), 2)
@@ -229,44 +226,40 @@ def eval_net(writer, global_step, net, test_data, n_classes, criterion, device, 
     true_overlayed_imgs_list, pred_overlayed_imgs_list, true_pred_overlayed_imgs_list = [], [], []
     images_list = []
     flows_list = []
-    iou_list, dsc_list, precision_list, recall_list = [], [], [], []        
+    iou_list, dsc_list, precision_list, recall_list = [], [], [], [] 
+    length_error_list, x_tip_error_list, y_tip_error_list = [], [], []       
 
     with torch.no_grad():
         # i = 0
-        # ipdb.set_trace()
         for j, data in enumerate(test_data):
             # import ipdb; ipdb.set_trace()
-            print("j=",j)
+            # print("j=",j)
             new_video_flag = True
-            # import ipdb; ipdb.set_trace()
             for i in range(len(data['images'])):            
                 # print("i= ", i)
                 mask_type = torch.float32 #if n_classes == 1 else torch.long                
                 imgs = data['images'][i] 
                 true_masks = data['needle_masks'][i] 
+                flows = None 
+                imgs_prev = None 
+                imgs = imgs.to(device=device, dtype=mask_type).unsqueeze(0).unsqueeze(0)
+                true_masks = true_masks.to(device=device, dtype=mask_type).unsqueeze(0).unsqueeze(0)
                 if kalman_flag:
-                    flows = None 
-                    imgs_prev = None 
-                    imgs = imgs.to(device=device, dtype=mask_type).unsqueeze(0).unsqueeze(0)
-                    true_masks = true_masks.to(device=device, dtype=mask_type).unsqueeze(0).unsqueeze(0)
-                    flows, imgs_prev = None , None
+                    pass
                 elif args.flow_flag:
                     imgs_prev = data['images_prev']
-                    flows = data['flow_concats']                     
                     imgs_prev = imgs_prev.to(device=device)
+                    flows = data['flow_concats']                     
                     flows = flows.to(device=device, dtype=mask_type).unsqueeze(0) / 255                    
-                    imgs = imgs.to(device=device, dtype=mask_type).unsqueeze(0).unsqueeze(0)
-                    true_masks = true_masks.to(device=device, dtype=mask_type).unsqueeze(0).unsqueeze(0)
-                else:
-                    flows = None #data['flow_concats']                      
+                else:                    
                     if args.n_flow > 1:
+                        imgs = imgs.unsqueeze(0)
+                        true_masks = true_masks.unsqueeze(0)
                         imgs_prev = data['images_prev']
-                        imgs_prev = imgs_prev.to(device=device, dtype=mask_type)
-                    else:
-                        imgs_prev = None #data['images_prev']
+                        imgs_prev = imgs_prev.to(device=device, dtype=mask_type).unsqueeze(0)
                     
-                    imgs = imgs.to(device=device, dtype=mask_type).unsqueeze(0)
-                    true_masks = true_masks.to(device=device, dtype=mask_type).unsqueeze(0)
+                    imgs = imgs.squeeze(0)
+                    true_masks = true_masks.squeeze(0)
                 
                 masks_pred, masks_pred_mean, _, _, = net(imgs, flow=flows, image_prev=imgs_prev, new_video_flag=new_video_flag)
                 new_video_flag = False
@@ -282,20 +275,37 @@ def eval_net(writer, global_step, net, test_data, n_classes, criterion, device, 
                 masks_pred = torch.sigmoid(masks_pred)
                 masks_pred_threshold = (masks_pred > 0.5).float() # additional filtering ? 
                 
-                # if args.needle_params:
-                #     true_masks_ = true_masks[0][0][0].cpu().numpy()
-                #     masks_pred_threshold_ = masks_pred_threshold[0][0][0].cpu().numpy()
-                #     true_mask_new, needle_params_true = find_needle_params(true_masks_)
-                #     masks_pred_new, needle_params_pred = find_needle_params(masks_pred_threshold_)
-                #     if needle_params_true == None:
-                #         print("no needle")
-                #     else:
-                #         # [x_start, y_start, needle_angle, needle_length, x_tip, y_tip]
-                #         # write images here 
-                #         print("needle params")
-                #         print(needle_params_true)
-                #         print(needle_params_pred)
-
+                # compute needle parameters and its error
+                if args.needle_params:
+                    if args.kalman_flag:
+                        true_masks_ = true_masks[0][0][0].cpu().numpy()
+                        masks_pred_threshold_ = masks_pred_threshold[0][0][0].cpu().numpy()
+                    else:
+                        true_masks_ = true_masks[0][0].cpu().numpy()
+                        masks_pred_threshold_ = masks_pred_threshold[0][0].cpu().numpy()  
+                                              
+                    _, needle_params_true = find_needle_params(true_masks_)
+                    _, needle_params_pred = find_needle_params(masks_pred_threshold_)
+                    
+                    if needle_params_true is not None:
+                        x_start_true, y_start_true, needle_angle_true, needle_length_true, x_tip_true, y_tip_true = \
+                                needle_params_true[0], needle_params_true[1], needle_params_true[2], needle_params_true[3], needle_params_true[4], needle_params_true[5]
+                    else:
+                        needle_length_true, x_tip_true, y_tip_true = 0, 0, 0
+                    
+                    if needle_params_pred is not None:
+                        x_start_pred, y_start_pred, needle_angle_pred, needle_length_pred, x_tip_pred, y_tip_pred = \
+                                needle_params_pred[0], needle_params_pred[1], needle_params_pred[2], needle_params_pred[3], needle_params_pred[4], needle_params_pred[5]
+                    else:
+                        needle_length_pred, x_tip_pred, y_tip_pred = 0, 0, 0    
+                    
+                    length_err = abs(needle_length_true - needle_length_pred)
+                    x_tip_error = abs(x_tip_true - x_tip_pred)
+                    y_tip_error = abs(y_tip_true - y_tip_pred)
+                    length_error_list.append(length_err)
+                    x_tip_error_list.append(x_tip_error)
+                    y_tip_error_list.append(y_tip_error)
+                    
 
                 #* compute IOU and keep a store            
                 iou_val, _, _ = iou(masks_pred_threshold, true_masks, kalman_flag=kalman_flag, eval=True)#.item()
@@ -316,29 +326,24 @@ def eval_net(writer, global_step, net, test_data, n_classes, criterion, device, 
                 
                 imgs = imgs.to('cpu') 
                 true_masks = true_masks.to('cpu') 
-                # if not kalman_flag:
-                #     flows = flows.to('cpu') 
-                #     flows_list.append(flows)
-                # else:
-                #     pass
 
                 masks_pred = masks_pred.to( 'cpu')
                 masks_pred_threshold = masks_pred_threshold.to( 'cpu')                
 
-                images_list.append(imgs)
+                # images_list.append(imgs)
                 loss_list.append(loss.item())
 
-                true_mask_list.append(true_masks)
-                pred_mask_list.append(masks_pred)
+                # true_mask_list.append(true_masks)
+                # pred_mask_list.append(masks_pred)
                 # overlayed_imgs_list.append(torch.concat([imgs.to('cpu'), true_masks, masks_pred_],dim = 1))
-                alpha = 0.8
-                true_overlayed_img = torch.concat([imgs, alpha*imgs + (1-alpha)*true_masks, imgs], dim = -3) 
-                pred_overlayed_img = torch.concat([imgs, alpha*imgs + (1-alpha)*masks_pred_threshold, imgs], dim = -3) 
-                true_pred_overlayed_img = torch.concat([masks_pred_threshold, torch.zeros_like(imgs), true_masks], dim = -3) 
+                # alpha = 0.8
+                # true_overlayed_img = torch.concat([imgs, alpha*imgs + (1-alpha)*true_masks, imgs], dim = -3) 
+                # pred_overlayed_img = torch.concat([imgs, alpha*imgs + (1-alpha)*masks_pred_threshold, imgs], dim = -3) 
+                # true_pred_overlayed_img = torch.concat([masks_pred_threshold, torch.zeros_like(imgs), true_masks], dim = -3) 
                         
-                true_overlayed_imgs_list.append(true_overlayed_img)
-                pred_overlayed_imgs_list.append(pred_overlayed_img)
-                true_pred_overlayed_imgs_list.append(true_pred_overlayed_img)
+                # true_overlayed_imgs_list.append(true_overlayed_img)
+                # pred_overlayed_imgs_list.append(pred_overlayed_img)
+                # true_pred_overlayed_imgs_list.append(true_pred_overlayed_img)
                 rand_inds = None
                 if kalman_flag:
                     rand_inds = 0 #range(imgs.shape[1]) # all images across sequences
@@ -357,19 +362,22 @@ def eval_net(writer, global_step, net, test_data, n_classes, criterion, device, 
         epoch_loss = np.mean(loss_list)
         images_list = torch.concat(images_list, dim=0)
         true_mask_list = torch.concat(true_mask_list, dim=0)        
-        # if not kalman_flag:
-            # flows_list = torch.concat(flows_list, dim=0)
-        pred_mask_list = torch.concat(pred_mask_list, dim=0)
-        true_overlayed_imgs_list = torch.concat(true_overlayed_imgs_list, dim=0)
-        pred_overlayed_imgs_list = torch.concat(pred_overlayed_imgs_list, dim=0)
-        true_pred_overlayed_imgs_list = torch.concat(true_pred_overlayed_imgs_list, dim=0)
+        
+        # pred_mask_list = torch.concat(pred_mask_list, dim=0)
+        # true_overlayed_imgs_list = torch.concat(true_overlayed_imgs_list, dim=0)
+        # pred_overlayed_imgs_list = torch.concat(pred_overlayed_imgs_list, dim=0)
+        # true_pred_overlayed_imgs_list = torch.concat(true_pred_overlayed_imgs_list, dim=0)
     
     print("len of precions={}, len of DSC={}".format(len(precision_list), len(dsc_list)))
     avg_iou = np.mean(iou_list)
     avg_precision = np.mean(precision_list)
     avg_recall = np.mean(recall_list)
     avg_dsc = np.mean(dsc_list)
+    avg_length_err = np.mean(length_error_list)
+    avg_x_tip_err = np.mean(x_tip_error_list)
+    avg_y_tip_err = np.mean(y_tip_error_list)
     print("iou={}, precision={}, recall={}, DSC={}".format(avg_iou, avg_precision, avg_recall, avg_dsc))
+    print("length error={}, x tip error={}, y tip error={}".format(avg_length_err, avg_x_tip_err, avg_y_tip_err))
 
     # write random predictions and ground truths 
     # rand_inds = random.sample(range(0, n_eval), min(n_eval,10)) # choose any random image at each logging 
@@ -444,7 +452,6 @@ if __name__ == '__main__':
     else:
         test_data = torch.load(os.path.join('saved_data', args.saved_data_file, 'test.pt')) #torch.load('saved_data/3/test.pt')
     
-    ipdb.set_trace()
     #! when feeding in the entire seqeunce no need to wrap in DataLoader
     # test_data =  DataLoader(test_data, batch_size=1*batch_size, shuffle=False)
 
@@ -458,76 +465,85 @@ if __name__ == '__main__':
     # dir_checkpoint = os.path.join('checkpoints/exp', str(args.iter) + '_conv_layers_{}_n_flow_={}'.format(args.conv_layers,args.n_flow))
     batch_size = args.batch_size 
     
-    list_of_weights = [
+    # list_of_weights = [
                         # 'VanillaUnetOG_start_channel_64_seed_10_Abl_conv_layers_2_nflow_1',
                         # 'VanillaUnetOG_start_channel_64_seed_101_Abl_conv_layers_1_nflow_1',
                     #    'UNet_cross2_BAMC_unetstart_64_kf_32_seed_42_conv_layers_1_nflow_1'
                     #    'Attention_cross2_BAMC_unetstart_64_kf_32_seed_42_conv_layers_1_nflow_1'
-                    ]
+                    # ]
     # list_of_weights = ['FlowUnetOG_start_channel_64_seed_10_Abl_conv_layers_1_nflow_1',
     #                    'FlowUnetOG_start_channel_64_seed_42_Abl_conv_layers_1_nflow_1',
     #                    'FlowUnetOG_start_channel_64_seed_101_Abl_conv_layers_1_nflow_1'
     #                   ]
-    list_of_weights = ['Convkalman2_cross2_BAMC_unetstart_64_kf_32_seed_42_conv_layers_1_nflow_1']
+    # list_of_weights = ['Convkalman2_cross2_BAMC_unetstart_64_kf_32_seed_42_conv_layers_1_nflow_1']
     # list_of_weights = ['ConvKalman_unetstart_64_kf_32_trajlen_35_seed_42_conv_layers_1_nflow_1']
     # list_of_weights = ['ConvKalman_unetstart_64_kf_64_trajlen_35_seed_101_conv_layers_1_nflow_1']
     # list_of_weights = ['ConvKalmanGauss_UNet_DARPA_unetstart_64_kf_32_seed_42_conv_layers_1_nflow_1']
     # list_of_weights = ['Stacked_cross2_BAMC_unetstart_64_kf_32_seed_42_conv_layers_1_nflow_4']
     # list_of_weights = ['LSTM_cross2_BAMC_unetstart_64_kf_32_seed_42_conv_layers_1_nflow_1']
     # list_of_weights = ['ConvKalman_UNet_UPMC_unetstart_64_kf_32_seed_42_trajlen=15_conv_layers_1_nflow_1'] # ConvKalman_BlueGel_unetstart_64_kf_32_seed_101_trajlen=12_conv_layers_1_nflow_1
-
+    list_of_weights = ['_Encoder_Stacked_Unet_Loop_Kfold1_conv_layers_1_nflow_4']
+    # list_of_weights = ['_Encoder_Unet_Kfold1_conv_layers_1_nflow_1']
 
     # list_of_weights = ['Stacked_UNet_BlueGel_unetstart_64_seed_10_conv_layers_1_nflow_4']
 
+    # encoder_types = ['vanilla', 'resnet18', 'hybrid']
+    encoder_types = ['hybrid']
 
-    for weight in list_of_weights:
-        dir_checkpoint = os.path.join('checkpoints/exp', weight,'CP_best_val_score.pth')
-        # dir_checkpoint = os.path.join('checkpoints/exp', weight,'CP_best_iou.pth')
-        
-        if not args.late_fusion:
-            scale = 1
+    for encoder in encoder_types:        
+        for weight in list_of_weights:
+            weight = encoder + weight
+            dir_checkpoint = os.path.join('checkpoints/exp', weight,'CP_best_val_score.pth')
+            # dir_checkpoint = os.path.join('checkpoints/exp', weight,'CP_best_iou.pth')
+            # dir_checkpoint = os.path.join('checkpoints/exp', weight,'CP_best_dice.pth')
+            
+            if not args.late_fusion:
+                scale = 1
 
-            kwargs = {}
-            kwargs['spatial_in_channel'] = 1
-            kwargs['out_channels'] = 16
-            kwargs['n_classes'] = 1
-            kwargs['n_depth'] = 5
-            kwargs['bilinear'] = False
-            kwargs['unet_channel_start'] = 64
-            kwargs['kf_channels'] = 32
+                kwargs = {}
+                kwargs['spatial_in_channel'] = 1
+                kwargs['out_channels'] = 16
+                kwargs['n_classes'] = 1
+                kwargs['n_depth'] = 4
+                kwargs['bilinear'] = False
+                kwargs['unet_channel_start'] = 64
+                kwargs['kf_channels'] = 32
+                kwargs['encoder_type'] = encoder # choose from ['vanilla', 'resnet18', 'resnet34', 'hybrid']
+                kwargs['recurrence_type'] = 'conv_kalman' # choose from ['lstm', 'conv_lstm', 'conv_kalman', 'conv_kalman_gauss']
+                
+                net = TwoStreamUNet(args, device=device, **kwargs)
+            
+            else:
+                print("in late fusion, no trained model present \n make late_fusion flag false")
 
-            net = TwoStreamUNet(args, device=device, **kwargs)
-        
-        else:
-            print("in late fusion, no trained model present \n make late_fusion flag false")
+            #! LOAD DATA AND MODEL
+            net.to(device=device)
+            weight_file_loc = dir_checkpoint #args.load #os.path.join(dir_checkpoint, 'CP_' + args.weight_type + '.pth')
+            net.load_state_dict(torch.load(weight_file_loc, map_location=device))
+            
+            net.eval()
 
-        #! LOAD DATA AND MODEL
-        net.to(device=device)
-        
-        weight_file_loc = dir_checkpoint #args.load #os.path.join(dir_checkpoint, 'CP_' + args.weight_type + '.pth')
-        net.load_state_dict(torch.load(weight_file_loc, map_location=device))
-        
-        net.eval()
+            if args.tensorboard:
+                writer = SummaryWriter(comment='_VAL_iter_{}'.format(args.iter))
+            else:
+                writer = None     
 
-        if args.tensorboard:
-            writer = SummaryWriter(comment='_VAL_iter_{}'.format(args.iter))
-        else:
-            writer = None     
-
-        try:
-            criterion = nn.BCEWithLogitsLoss() 
-
-            eval_net(writer, 0, net, test_data, kwargs['n_classes'],criterion, device, args)
-            # eval_net_stacked(writer, 0, net, test_data, kwargs['n_classes'],criterion, device, args)
-
-            print("done evaluation, closing tensorboard writer ")
-            if writer is not None:
-                writer.close()        
-
-        except KeyboardInterrupt:        
-            pass
             try:
-                sys.exit(0)
-            except SystemExit:
-                os._exit(0)
+                criterion = nn.BCEWithLogitsLoss() 
+
+                eval_net(writer, 0, net, test_data, kwargs['n_classes'], criterion, device, args)
+                # eval_net_stacked(writer, 0, net, test_data, kwargs['n_classes'],criterion, device, args)
+
+                print("done evaluation, closing tensorboard writer ")
+                if writer is not None:
+                    writer.close()        
+
+                del net
+
+            except KeyboardInterrupt:        
+                pass
+                try:
+                    sys.exit(0)
+                except SystemExit:
+                    os._exit(0)
 

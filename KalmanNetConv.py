@@ -4,10 +4,11 @@ import torch.nn as nn
 from einops import rearrange
 from einops.layers.torch import Rearrange
 from Transformer import Transformer
+import ipdb
 
-# torch.manual_seed(42)
+torch.manual_seed(42)
 # torch.manual_seed(10)
-torch.manual_seed(101)
+# torch.manual_seed(101)
 
 class ViT(nn.Module):
     '''
@@ -132,6 +133,52 @@ class ConvLSTMCell(nn.Module):
                 torch.zeros(batch_size, self.hidden_dim, height, width, device=self.conv.weight.device))
 
 
+class ConvLSTM(ConvLSTMCell):
+    def __init__(self, device, input_dim, height, width, hidden_dim=16, kernel_size=(3, 3)):
+        hidden_dim = input_dim
+        super(ConvLSTM, self).__init__(input_dim=input_dim, hidden_dim=hidden_dim, feature_sz=(height, width), kernel_size=kernel_size)
+        self.height = height
+        self.width = width
+        self.device = device 
+
+    def forward(self, x, new_video_flag=False):
+        B, T, C, H, W = x.shape
+        h_t, c_t =self.init_hidden(B, image_size=(self.height, self.width))
+
+        mean_list = [x[:,0]]
+        
+        for t in range(1, T):
+            h_t, c_t = super().forward(x[:,t], (h_t, c_t))
+            mean_list.append(h_t)
+
+        mean_list = torch.stack(mean_list, dim=1)
+        mean_list = rearrange(mean_list, 'b t c h w -> (b t) c h w')
+
+        return mean_list
+
+
+class ConvLSTMVal(ConvLSTMCell):
+    def __init__(self, device, input_dim, height, width, hidden_dim, kernel_size=(3, 3)):
+        hidden_dim = input_dim
+        super().__init__(input_dim=input_dim, hidden_dim=hidden_dim, feature_sz=(height, width), kernel_size=kernel_size)
+        self.device = device
+        self.height = height
+        self.width = width
+        self.h_t = None 
+        self.c_t = None
+
+    def forward(self, x, new_video_flag=False):
+        # import ipdb; ipdb.set_trace()
+        B, T, C, H, W = x.shape
+        x = x.view(-1, C, H, W)
+        if new_video_flag:
+            self.h_t, self.c_t = self.init_hidden(B, image_size=(self.height, self.width))
+            return x
+        
+        self.h_t, self.c_t = super().forward(x, (self.h_t, self.c_t))
+        out = self.h_t.view(-1, C, H, W)
+        return out
+
 class KalmanNetConv(nn.Module):
     def __init__(self, device, B, in_channels, height, width, state_dim=256, embed_channels=16, transformer_flag=False, high_res_flag=False):
         super(KalmanNetConv, self).__init__()
@@ -142,7 +189,7 @@ class KalmanNetConv(nn.Module):
         self.width = width
         self.state_dim = state_dim
         # Input channels = C, EmbedChannels = EC
-        self.embed_channels = embed_channels
+        self.embed_channels = in_channels #!embed_channels
         self.transformer_flag = transformer_flag
 
         # H_out = (H_in + 2*p - (k-1) - 1)/stride + 1 | Conv2D
@@ -202,10 +249,10 @@ class KalmanNetConv(nn.Module):
         traj_len = x.shape[1]
         # pass through encoder 
         B, T, C, H, W = x.shape
-        x_ = x.view(B*T, C, H, W)
-        z = self.encoder(x_)
-
-        z = z.view(B, T, self.embed_channels, H, W)
+        # x = rearrange(x, 'b t c h w -> (b t) c h w')
+        # z = self.encoder(x)
+        # z = z.view(B, T, self.embed_channels, H, W)
+        z = x 
 
         # self.state_mean = torch.zeros(self.B, self.embed_channels, self.height, self.width, device = self.device)
         self.state_mean = z[:,0]
@@ -251,8 +298,9 @@ class KalmanNetConv(nn.Module):
 
         # mean_list.pop(0)
         mean_list = torch.stack(mean_list, dim=1)
-        mean_list = mean_list.view(B*T, self.embed_channels, H, W)
-        x_estimate = self.decoder(mean_list)
+        mean_list = rearrange(mean_list, 'b t c h w -> (b t) c h w') #mean_list.view(B*T, self.embed_channels, H, W)
+        # mean_list = self.decoder(mean_list)
+        x_estimate = mean_list 
         # x_estimate = x_estimate.view(B, T, C//2, 2*H, 2*W)
 
         return x_estimate
@@ -268,7 +316,7 @@ class KalmanNetConvVal(KalmanNetConv):
         self.height = height
         self.width = width
         self.state_dim = state_dim
-        self.embed_channels = embed_channels
+        self.embed_channels = in_channels #embed_channels
 
         #* Note: Every initialization will swap out any Kalman Net Conv history
         self.state_mean = None
@@ -318,9 +366,8 @@ class KalmanNetConvVal(KalmanNetConv):
 
         # pass through encoder 
         B, T, C, H, W = x.shape
-        x_ = x.view(B*T, C, H, W)
-        
-        z = self.encoder(x_)
+        x = rearrange(x, 'b t c h w -> (b t) c h w') #x.view(B*T, C, H, W)
+        z = x #self.encoder(x_)
 
         # re-initialise the network
         if new_video_flag:
@@ -329,25 +376,26 @@ class KalmanNetConvVal(KalmanNetConv):
             self.mean_list = [self.state_mean]
             self.state_error_prev = self.state_mean
             self.h_t, self.c_t =self.conv_lstm_cell.init_hidden(B, image_size=(self.height, self.width))
-            new_video_flag = False            
+            new_video_flag = False
+            return self.state_mean             
 
-        z_t = z #self.encoder(x[:,t])  
+        # z_t = z #self.encoder(x[:,t])  
         # State dynamics: B, EC, H, W
         state_mean_est = self.dynamics_model(self.mean_list[-1])
 
         # Observation model: B, EC, H, W
-        z_tilde_t = z_t - self.observation_model(state_mean_est)
+        z_tilde = z - self.observation_model(state_mean_est)
 
         # Concatenate along the channels
-        rnn_state = torch.cat([z_tilde_t, self.state_error_prev], dim=1) 
+        rnn_state = torch.cat([z_tilde, self.state_error_prev], dim=1) 
                 
         # ConvLSTM
-        self.h_t, self.c_t = self.conv_lstm_cell(input_tensor =rnn_state, cur_state=(self.h_t, self.c_t))
+        self.h_t, self.c_t = self.conv_lstm_cell(rnn_state, (self.h_t, self.c_t))
 
         K_t = self.h_t # B, EC, H, W
 
         # Update state
-        state_mean_updated = state_mean_est + K_t * z_tilde_t
+        state_mean_updated = state_mean_est + K_t * z_tilde
         # state_mean_updated = state_mean_est + K_t
 
         # state error
@@ -359,8 +407,8 @@ class KalmanNetConvVal(KalmanNetConv):
         self.mean_list.append(self.state_mean)
 
 
-        x_estimate = self.decoder(self.state_mean)
-        x_estimate = x_estimate.view(B, T, C, H, W)
+        x_estimate = self.state_mean #self.decoder(self.state_mean)
+        # x_estimate = rearrange(x_estimate, '(b t) c h w -> b t c h w', b = B, t = T) #x_estimate.view(B, T, C, H, W)
 
         return x_estimate
 
@@ -512,13 +560,6 @@ class KalmanNetConvGauss(nn.Module):
 class KalmanNetConvGaussVal(KalmanNetConvGauss):
     def __init__(self, device, B, in_channels, height, width, state_dim=256, embed_channels=16):
         super(KalmanNetConvGaussVal, self).__init__(device, B, in_channels, height, width, state_dim, embed_channels)
-        # self.device = device
-        # self.B = B
-        # self.in_channels = in_channels
-        # self.height = height
-        # self.width = width
-        # self.state_dim = state_dim
-        # self.embed_channels = embed_channels
 
         #* Note: Every initialization will swap out any Kalman Net Conv history
         self.state_mean = None
@@ -526,44 +567,6 @@ class KalmanNetConvGaussVal(KalmanNetConvGauss):
         self.c_KG_t = None
         self.h_Sigma_t = None
         self.c_Sigma_t = None
-
-        # # H_out = (H_in + 2*p - (k-1) - 1)/stride + 1 | Conv2D
-        # # 32x32 -> 32x32
-        # self.encoder = nn.Sequential(nn.Conv2d(in_channels=self.in_channels, out_channels=self.embed_channels, kernel_size=3, stride=1, padding=1),
-        #                             nn.LayerNorm([self.embed_channels, self.height, self.width]),
-        #                             nn.ReLU())
-        # # H_out = (H_in - 1)*stride - 2*p + (k -1) + 1 | ConvTranspose2D
-        # # 32x32 -> 32x32
-        # self.decoder = nn.Sequential(nn.ConvTranspose2d(in_channels=self.embed_channels, out_channels=self.in_channels, kernel_size=1, stride=1, padding=0),
-        #                             nn.LayerNorm([self.in_channels, self.height, self.width]),
-        #                             nn.ReLU(),
-        #                             # nn.ConvTranspose2d(in_channels=self.embed_channels, out_channels=self.in_channels, kernel_size=3, stride=2)
-        #                             )
-
-        # # 32x32 -> 32x32
-        # self.dynamics_model = nn.Sequential(nn.Conv2d(in_channels=self.embed_channels, out_channels=self.embed_channels, kernel_size=3, stride=1, padding=1),
-        #                                     nn.LayerNorm([self.embed_channels, height, width]),
-        #                                     nn.ReLU(),
-        #                                     # nn.Conv2d(in_channels=self.embed_channels, out_channels=self.embed_channels, kernel_size=7, stride=1, padding=0,)
-        #                                     )
-        # # 32x32 -> 32x32
-        # self.observation_model = nn.Sequential(nn.Conv2d(in_channels=self.embed_channels, out_channels=self.embed_channels, kernel_size=3, stride=1, padding=1),
-        #                             nn.LayerNorm([self.embed_channels, height, width]),
-        #                             nn.ReLU(),
-        #                             # nn.Conv2d(in_channels=self.embed_channels, out_channels=self.embed_channels, kernel_size=7, stride=1, padding=0,)
-        #                             )
-        # # 
-        # self.RNN_state = nn.Sequential(            
-        #     nn.Conv2d(in_channels=self.embed_channels*2, out_channels=self.embed_channels, kernel_size=3, stride=1, padding=1,),
-        #     nn.LayerNorm([self.embed_channels, height, width]),
-        #     nn.ReLU()
-        # )
-
-        # # 32x32 -> 32x32 | 3 channels = [z_tilde, state_error_prev, Sigma]
-        # self.conv_lstm_cell_KG = ConvLSTMCell(input_dim=self.embed_channels*3, hidden_dim=self.embed_channels, kernel_size=(3,3), bias=False)
-
-        # # 32x32 -> 32x32
-        # self.conv_lstm_cell_Sigma = ConvLSTMCell(input_dim=self.embed_channels, hidden_dim=self.embed_channels, kernel_size=(3,3), bias=False)
 
     def forward(self, x, new_video_flag=False):
         '''

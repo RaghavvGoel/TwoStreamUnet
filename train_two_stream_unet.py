@@ -32,51 +32,13 @@ from utils_two_stream_unet import find_flow_history, get_dict_vals, sigmoid_foca
 
 from torch.utils.data import DataLoader, random_split
 
-ROOT_FOLDER = '/data/raghavvg/NeedleMasks/' #COMMENT THIS IF IF SYSTEM CHANGES
+# ROOT_FOLDER = '/data/raghavvg/NeedleMasks/' #COMMENT THIS IF IF SYSTEM CHANGES
 
-IMAGE_LOC  = 'JPEGImages'
-MASK_LOC = 'SegmentationClass'
+# IMAGE_LOC  = 'JPEGImages'
+# MASK_LOC = 'SegmentationClass'
 
-PARENT_FOLDER_TRAIN = 'new_dataset' #os.path.join(ROOT_FOLDER,'data')
-PARENT_FOLDER_TEST = 'new_dataset/test' #os.path.join(ROOT_FOLDER, 'data/test')
-
-# LIST_OF_DATASETS_TRAIN = ['task_positives_189-2022_04_12_18_32_54-segmentation mask 1.1']
-LIST_OF_DATASETS_TRAIN = [
-                        'task_negatives_136-2022_04_21_17_19_17-segmentation mask 1.1',
-                        'task_positives_11-2022_04_12_18_28_14-segmentation mask 1.1',
-                        'task_positives_153-2022_04_12_18_32_22-segmentation mask 1.1',
-                        'task_positives_189-2022_04_12_18_32_54-segmentation mask 1.1',
-                        'task_positives_193-2022_04_18_19_26_03-segmentation mask 1.1',
-                        'task_positives_222-2022_04_19_22_31_15-segmentation mask 1.1',                        
-                        # 'task_1. extremity nerve with needle-2022_07_09_14_28_33-segmentation mask 1.1',
-                        # 'task_1. extremity nerve with status post anesthetic injection-2022_07_09_15_38_21-segmentation mask 1.1',
-                        # 'task_negatives_238-2022_04_12_18_51_42-segmentation mask 1.1', #! send to test
-                        # 'task_4. femoral nerve with needle and anesthetic 3-2022_07_09_14_57_39-segmentation mask 1.1',
-                        # 'task_positives_93-2022_04_12_18_28_39-segmentation mask 1.1', #! send to test
-                        # 'task_1. extremity nerve with needle-2022_07_09_14_28_33-segmentation mask 1.1',                        
-                        # 'task_4. femoral nerve with needle not passing fascial planes-2022_07_09_14_19_20-segmentation mask 1.1',
-                        'task_positives_94-2022_04_19_22_08_47-segmentation mask 1.1',
-                        'task_positives_134-2022_04_12_18_31_26-segmentation mask 1.1',
-                        'task_negatives_191-2022_04_12_18_49_18-segmentation mask 1.1',                        
-                        'task_positives_240-2022_04_22_19_59_15-segmentation mask 1.1',
-                        'task_negatives_189-2022_04_12_18_48_43-segmentation mask 1.1',
-                        # 'task_3. interscalene nerve with needle not close to nerves-2022_07_01_17_34_41-segmentation mask 1.1',
-                        # 'task_positives_67-2022_04_18_19_11_58-segmentation mask 1.1', (moved to test)
-                        # 'task_negatives_204-2022_04_08_16_58_31-segmentation mask 1.1', # in test
-                        'task_negatives_179-2022_04_12_18_47_47-segmentation mask 1.1',
-                        'task_positives_205-2022_04_21_17_04_12-segmentation mask 1.1' #! this is test dataset 
-                        ]
-
-LIST_OF_DATASETS_TEST = [
-                        # 'task_negatives_179-2022_04_12_18_47_47-segmentation mask 1.1',
-                        #  'task_positives_67-2022_04_18_19_11_58-segmentation mask 1.1', #! send to train
-                        #  'task_negatives_238-2022_04_12_18_51_42-segmentation mask 1.1', #! USE FOR FINAL TESTING
-                         'task_positives_93-2022_04_12_18_28_39-segmentation mask 1.1',                        
-                         'task_negatives_204-2022_04_08_16_58_31-segmentation mask 1.1',
-                         'task_positives_67-2022_04_18_19_11_58-segmentation mask 1.1'
-                        # 'task_positives_205-2022_04_21_17_04_12-segmentation mask 1.1',
-                        # 'task_4. femoral nerve with needle not passing fascial planes-2022_07_09_14_19_20-segmentation mask 1.1'
-                        ]
+# PARENT_FOLDER_TRAIN = 'new_dataset' #os.path.join(ROOT_FOLDER,'data')
+# PARENT_FOLDER_TEST = 'new_dataset/test' #os.path.join(ROOT_FOLDER, 'data/test')
 
 #! command for transfering data:  rsync -a --ignore-existing data/PigLabData  luyuan@luyuan.wifi.cmu.edu:~/thomaswe/TwoStreamUnet/new_dataset
 
@@ -120,17 +82,6 @@ def log_tensorboard(writer, global_step, type, true_masks, masks_pred, true_over
     if sigma_ is not None:
         writer.add_images(type+'/uncertainty', sigma, global_step)
 
-    # if last_encoded_feature is not None:
-    #     writer.add_images(type+'_features'+'/last_encoded_feature', last_encoded_feature.unsqueeze(1), global_step)
-    # if len(spatial_features) > 0: 
-    #     pass
-    #     # spatial_features_ = spatial_features[rand_inds].unsqueeze(2)
-    #     # writer.add_images(type+'_features/spatial_features', spatial_features_.reshape(-1,1,x_spatial_shape[-2],x_spatial_shape[-1]), global_step)
-    # if len(temporal_features) > 0:
-    #     pass
-    #     # temporal_features_ = temporal_features[rand_inds].unsqueeze(2)
-    #     # writer.add_images(type+'_features/temporal_features', temporal_features_.reshape(-1,1,x_spatial_shape[-2],x_spatial_shape[-1]), global_step)
-
 
 def eval_net(writer, global_step, net, test_data, n_classes, criterion, device, args):
     '''
@@ -157,33 +108,28 @@ def eval_net(writer, global_step, net, test_data, n_classes, criterion, device, 
     tp_by_all_positive_list = []
     precision_list, recall_list, dice_score_list = [], [], []
     with torch.no_grad():
-        i = 0
         for i, data in enumerate(test_data):                   
             mask_type = torch.float32 #if n_classes == 1 else torch.long
             imgs = data['images'] 
-            true_masks = data['needle_masks'] 
-            if kalman_flag:
-                flows = None 
-                imgs_prev = None
-                if vector_flag:
-                    true_mask_new = data['needle_masks_new']
-                    needle_params = data['needle_params'] 
-                    needle_params = needle_params.to(device=device, dtype=mask_type)
-            elif flow_flag:
-                imgs_prev = data['images_prev']
-                flows = data['flow_concats'] 
-                imgs_prev = imgs_prev.to(device=device) 
-                flows = flows.to(device=device, dtype=mask_type) / 255
+            masks_true = data['needle_masks'] 
+            flows = None
+            imgs_prev = None
+            if kalman_flag and vector_flag:
+                true_mask_new = data['needle_masks_new']
+                needle_params = data['needle_params'] 
+                needle_params = needle_params.to(device=device, dtype=mask_type)
+            # elif flow_flag:
+            #     imgs_prev = data['images_prev']
+            #     flows = data['flow_concats'] 
+            #     imgs_prev = imgs_prev.to(device=device) 
+            #     flows = flows.to(device=device, dtype=mask_type) / 255
             else:
-                flows = None
                 if n_flow>1:
                     imgs_prev = data['images_prev']
                     imgs_prev = imgs_prev.to(device=device, dtype=mask_type) 
-                else:
-                    imgs_prev = None
 
             imgs = imgs.to(device=device, dtype=mask_type)
-            true_masks = true_masks.to(device=device, dtype=mask_type)
+            masks_true = masks_true.to(device=device, dtype=mask_type)
             masks_pred, mean, sigma, flow = net(imgs,flows,imgs_prev) 
             # masks_pred, x_spatial, x_temporal = net(imgs,flows_) # flow in form of x, y matrices
 
@@ -191,7 +137,6 @@ def eval_net(writer, global_step, net, test_data, n_classes, criterion, device, 
                 sigma = sigma.to('cpu')                
                 sigma = sigma/torch.max(sigma) if torch.max(sigma) > 1 else sigma                
                 sigma_list.append(sigma)
-
                 # use mean as prediction during evaluation                 
                 masks_pred = mean
 
@@ -200,72 +145,69 @@ def eval_net(writer, global_step, net, test_data, n_classes, criterion, device, 
                 scale_needle_param = torch.tensor([256, 256, (2*pi), 256]).to(device)
                 masks_pred  = masks_pred[:,:,:4]*scale_needle_param
                 masks_true = needle_params[:,:,:4] #*scale_needle_param 
-                loss = criterion(masks_pred, masks_true)
-            else:
-                loss = criterion(masks_pred, true_masks) # bce with logits already has sigmoid 
-            if vector_flag:
                 x_start_error = torch.mean(torch.abs(needle_params[:,:,0] - masks_pred[:,:,0]))
                 y_start_error = torch.mean(torch.abs(needle_params[:,:,1] - masks_pred[:,:,1]))
                 angle_error = torch.mean(torch.abs(needle_params[:,:,2] - masks_pred[:,:,2])) 
                 length_error = torch.mean(torch.abs(needle_params[:,:,3] - masks_pred[:,:,3]))
-            # loss = sigmoid_focal_loss(masks_pred, true_masks, device)
             else:
                 masks_pred = torch.sigmoid(masks_pred)
                 masks_pred_threshold = (masks_pred > 0.5).float() # additional filtering ? 
-            
                 #* compute IOU and keep a store            
-                iou_batch, tp_by_all_positive, _ = iou(masks_pred_threshold, true_masks, kalman_flag=kalman_flag)
+                iou_batch, tp_by_all_positive, _ = iou(masks_pred_threshold, masks_true, kalman_flag=kalman_flag)
                 iou_batch, tp_by_all_positive = iou_batch.item(), tp_by_all_positive.item()
                 iou_list.append(iou_batch)
                 tp_by_all_positive_list.append(tp_by_all_positive)
                 #* compute precision, recall and DSC
-                dice_score_value = dice_score(masks_pred_threshold, true_masks, kalman_flag=kalman_flag)
-                precision, recall = precision_recall(masks_pred_threshold, true_masks, kalman_flag=kalman_flag)
+                dice_score_value = dice_score(masks_pred_threshold, masks_true, kalman_flag=kalman_flag)
+                precision, recall = precision_recall(masks_pred_threshold, masks_true, kalman_flag=kalman_flag)
                 dice_score_value, precision, recall = dice_score_value.item(), precision.item(), recall.item()
                 precision_list.append(precision); recall_list.append(recall); dice_score_list.append(dice_score_value) 
 
                 masks_pred_threshold = masks_pred_threshold.to( 'cpu')
+            
+            # FIND LOSS
+            loss = criterion(masks_pred, masks_true)
+            loss_list.append(loss.item())
 
+            # SEND TENSORS TO CPU
             imgs = imgs.to('cpu') 
-            true_masks = true_masks.to('cpu') 
+            masks_true = masks_true.to('cpu') 
+            masks_pred = masks_pred.to( 'cpu')
             if flow_flag:
                 flows = flows.to('cpu') 
                 flows_list.append(flows)
 
-            masks_pred = masks_pred.to( 'cpu')
+            if len(images_list) < 20:
+                images_list.append(imgs)
 
-            images_list.append(imgs)
-            loss_list.append(loss.item())
+                if vector_flag:
+                    x_start_error_list.append(x_start_error)
+                    y_start_error_list.append(y_start_error)
+                    angle_error_list.append(angle_error)
+                    length_error_list.append(length_error)
+                else:
+                    true_mask_list.append(masks_true)
+                    pred_mask_list.append(masks_pred)
+                    true_overlayed_img = torch.concat([imgs, 0.6*imgs + 0.4*masks_true, imgs], dim = -3) 
+                    pred_overlayed_img = torch.concat([imgs, 0.6*imgs + 0.4*masks_pred_threshold, imgs], dim = -3) 
+                    true_pred_overlayed_img = torch.concat([masks_pred_threshold, torch.zeros_like(imgs), masks_true], dim = -3) 
 
-            if vector_flag:
-                x_start_error_list.append(x_start_error)
-                y_start_error_list.append(y_start_error)
-                angle_error_list.append(angle_error)
-                length_error_list.append(length_error)
-            else:
-                true_mask_list.append(true_masks)
-                pred_mask_list.append(masks_pred)
-                # overlayed_imgs_list.append(torch.concat([imgs.to('cpu'), true_masks, masks_pred_],dim = 1))
-                true_overlayed_img = torch.concat([imgs, 0.6*imgs + 0.4*true_masks, imgs], dim = -3) 
-                pred_overlayed_img = torch.concat([imgs, 0.6*imgs + 0.4*masks_pred_threshold, imgs], dim = -3) 
-                true_pred_overlayed_img = torch.concat([masks_pred_threshold, torch.zeros_like(imgs), true_masks], dim = -3) 
-
-                true_overlayed_imgs_list.append(true_overlayed_img)
-                pred_overlayed_imgs_list.append(pred_overlayed_img)
-                true_pred_overlayed_imgs_list.append(true_pred_overlayed_img)
+                    true_overlayed_imgs_list.append(true_overlayed_img)
+                    pred_overlayed_imgs_list.append(pred_overlayed_img)
+                    true_pred_overlayed_imgs_list.append(true_pred_overlayed_img)
 
         epoch_loss = np.mean(loss_list)
         images_list = torch.concat(images_list, dim=0)
         if not vector_flag:
             true_mask_list = torch.concat(true_mask_list, dim=0)        
-            if flow_flag:
-                flows_list = torch.concat(flows_list, dim=0)
-            if gauss_flag:            
-                sigma_list = torch.concat(sigma_list, dim=0)
             pred_mask_list = torch.concat(pred_mask_list, dim=0)
             true_overlayed_imgs_list = torch.concat(true_overlayed_imgs_list, dim=0)
             pred_overlayed_imgs_list = torch.concat(pred_overlayed_imgs_list, dim=0)
             true_pred_overlayed_imgs_list = torch.concat(true_pred_overlayed_imgs_list, dim=0)
+            if flow_flag:
+                flows_list = torch.concat(flows_list, dim=0)
+            if gauss_flag:            
+                sigma_list = torch.concat(sigma_list, dim=0)
     
     if not vector_flag:
         avg_iou = np.mean(iou_list)
@@ -273,14 +215,14 @@ def eval_net(writer, global_step, net, test_data, n_classes, criterion, device, 
         avg_dice_score = np.mean(dice_score_list)
         avg_recall = np.mean(recall_list)
         avg_precision = np.mean(precision)
-
         print("AVERAGE iou={}, dice_score={}, recall={}, precision={}".format(avg_iou, avg_dice_score, avg_recall, avg_precision))
+
     # write random predictions and ground truths 
     if kalman_flag:
         rand_inds = range(imgs.shape[1]) #random.sample(range(0, n_eval), min(n_eval,10)) # choose any random image at each logging 
         batch_idx = random.sample(range(0, len(images_list)-1),1)[0]                
         if vector_flag:
-            masks = torch.zeros_like(true_masks[0], dtype=torch.uint8).permute(0, 2, 3, 1).numpy()
+            masks = torch.zeros_like(masks_true[0], dtype=torch.uint8).permute(0, 2, 3, 1).numpy()
             masks_pred = masks_pred[0].numpy()
             masks_list = []
             for kk in range(masks.shape[0]):
@@ -294,7 +236,7 @@ def eval_net(writer, global_step, net, test_data, n_classes, criterion, device, 
             #? just logging error of last data
             writer.add_images('test/mask_pred', masks_list, global_step)
             writer.add_images('test/mask_pred_overlayed', masks_list + true_mask_new[0], global_step)
-            writer.add_images('test/true_pred', true_masks[0], global_step)
+            writer.add_images('test/true_pred', masks_true[0], global_step)
             writer.add_images('test/true_pred_new', true_mask_new[0], global_step)
             writer.add_scalar('test/x_start_error', torch.mean(torch.stack(x_start_error_list)), global_step)
             writer.add_scalar('test/y_start_error', torch.mean(torch.stack(y_start_error_list)), global_step)
@@ -325,7 +267,7 @@ def eval_net(writer, global_step, net, test_data, n_classes, criterion, device, 
     return epoch_loss, avg_iou, iou_0, avg_tp_by_all_positive, tp_by_all_positive_0, avg_dice_score, avg_precision, avg_recall
 
 def train_net(net, args, **kwargs):
-    import ipdb; ipdb.set_trace()
+    # import ipdb; ipdb.set_trace()
     device = kwargs['device']
     batch_size = args.batch_size
     lr = args.lr
@@ -357,7 +299,7 @@ def train_net(net, args, **kwargs):
         train_data = torch.load(os.path.join('saved_data', saved_data_file, 'train.pt')) #torch.load('saved_data/3/train.pt')
         test_data = torch.load(os.path.join('saved_data', saved_data_file, 'test.pt')) #torch.load('saved_data/3/test.pt')
 
-
+    # import ipdb; ipdb.set_trace()
     #! Splitting train data into train and test | add flag for this 
     # _len_data  = len(train_data)
     # train_data, test_data = torch.utils.data.random_split(train_data, [int(0.75*_len_data), _len_data-int(0.75*_len_data)], generator=torch.Generator().manual_seed(42))
@@ -368,7 +310,7 @@ def train_net(net, args, **kwargs):
     
 
     conv_layers = args.conv_layers
-    iter = args.iter
+    iter = kwargs['iter'] #args.iter
     if args.task == 'train':
         dir_checkpoint = os.path.join('checkpoints/exp', str(iter) + '_conv_layers_{}_nflow_{}'.format(conv_layers,n_flow))
         if not os.path.exists(dir_checkpoint):
@@ -412,7 +354,22 @@ def train_net(net, args, **kwargs):
                                      get_weights(net.temporal_conv.named_parameters())}, 
                                     {'params':get_weights(net.flownet.named_parameters()), 'lr':lr*1e-1}], lr=lr, weight_decay=1e-5) #momentum=0.9
     else:
-        optimizer = optim.AdamW(net.parameters(), lr=lr, weight_decay=1e-5)
+        # optimizer = optim.AdamW(net.parameters(), lr=lr, weight_decay=5e-5)
+        # ipdb.set_trace()
+        if kwargs['encoder_type'] in ['resnet18', 'resnet34', 'hybrid']:
+            if kalman_flag:
+                optimizer = optim.AdamW([{'params': get_weights(net.UNet.kalman_model.named_parameters()) + get_weights(net.UNet.up2.named_parameters())
+                                        + get_weights(net.UNet.up3.named_parameters()) + get_weights(net.UNet.up4.named_parameters()) + get_weights(net.UNet.outc.named_parameters())
+                                        , 'lr':lr}, 
+                                        {'params':get_weights(net.UNet.encoder.named_parameters()), 'lr':1e-5}], weight_decay=5e-5)
+            else:
+                optimizer = optim.AdamW([{'params': get_weights(net.UNet.up2.named_parameters())
+                                        + get_weights(net.UNet.up3.named_parameters()) + get_weights(net.UNet.up4.named_parameters()) + get_weights(net.UNet.outc.named_parameters())
+                                        , 'lr':lr}, 
+                                        {'params':get_weights(net.UNet.encoder.named_parameters()), 'lr':1e-5}], weight_decay=5e-5)            
+        else:
+            optimizer = optim.AdamW(net.parameters(), lr=lr, weight_decay=5e-5)
+        
         # optimizer = optim.RMSprop(net.parameters(), lr=lr, weight_decay=1e-5, momentum=0.9)
     
     #! initialize scheduler
@@ -433,7 +390,7 @@ def train_net(net, args, **kwargs):
 
     #! TRAINING STARTS HERE
     min_val_score = float('inf')
-    max_eval_iou = 0.
+    max_eval_dice = 0.
     max_eval_tp_by_all_positive = 0
     for epoch in range(args.epochs):
         net.train()
@@ -518,10 +475,10 @@ def train_net(net, args, **kwargs):
                                                 eval_net(writer, global_step, 
                                                   net, test_data, n_classes, criterion, device, args )
 
-                    if avg_iou_eval is not None and avg_iou_eval > max_eval_iou:
-                        max_eval_iou = avg_iou_eval
+                    if avg_dice_score is not None and avg_dice_score > max_eval_dice:
+                        max_eval_dice = avg_dice_score
                         if args.store_weights:
-                            torch.save(net.state_dict(), os.path.join(dir_checkpoint, 'CP_best_iou.pth'))
+                            torch.save(net.state_dict(), os.path.join(dir_checkpoint, 'CP_best_dice.pth'))
                     # if avg_tp_by_all_positive > max_eval_tp_by_all_positive:
                     #     max_eval_tp_by_all_positive = avg_tp_by_all_positive
                     #     if args.store_weights:
@@ -681,6 +638,7 @@ def get_args():
     parser.add_argument('--process_model_flag', action='store_true', default=False, help='generate next state using just process model')
     parser.add_argument('--high_res_flag', action='store_true', default=False, help='generate next state using just process model')
     parser.add_argument('--data_type', type=str, default='DARPA', help='one of the following: [DARPA, UPMC, BlueGel]')
+    # parser.add_argument('--recurrence_type', type=str, default='lstm', help='choose one of the following when kalman_flag is chosen: [lstm, conv_lstm, conv_kalman, conv_kalman_gauss]')
 
     return parser.parse_args()
 
@@ -699,55 +657,60 @@ if __name__ == '__main__':
     #   - For N > 2 classes, use n_classes=N
 
     batch_size = args.batch_size 
-    if not args.late_fusion:
-        scale = 1
+    encoder_type_list = ['vanilla','resnet18','hybrid'] #['resnet18', 'hybrid','vanilla']
+    for encoder in encoder_type_list:
+        print("encoder = ", encoder)
+        if not args.late_fusion: #args.late_fusion is not used, can remove this if statement
+            scale = 1
 
-        kwargs = {}
-        kwargs['spatial_in_channel'] = 1
-        kwargs['out_channels'] = 16
-        kwargs['n_classes'] = 1
-        kwargs['n_depth'] = 5
-        kwargs['bilinear'] = False
-        kwargs['unet_channel_start'] = 64
-        kwargs['kf_channels'] = 32
+            kwargs = {}
+            kwargs['spatial_in_channel'] = 1
+            kwargs['out_channels'] = 16
+            kwargs['n_classes'] = 1
+            kwargs['n_depth'] = 4
+            kwargs['bilinear'] = False
+            kwargs['unet_channel_start'] = 64  
+            kwargs['kf_channels'] = 32
+            kwargs['encoder_type'] = encoder # choose from ['vanilla', 'resnet18', 'resnet34', 'hybrid']
+            kwargs['recurrence_type'] = 'conv_kalman' # choose from ['lstm', 'conv_lstm', 'conv_kalman', 'conv_kalman_gauss']
+            kwargs['iter'] = encoder + '_' + args.iter 
+
+            net = TwoStreamUNet(args,device=device, **kwargs)
+    
+            # freeze flownet parameters
+            # ipdb.set_trace()
+            # for tag, value in net.named_parameters():
+            #     print("tag = " , tag , "  " , value.requires_grad)
+        net.to(device=device)
+        # faster convolutions, but more memory
+        # cudnn.benchmark = True
+
+        if args.load:
+            # to check weights : net.UNet.inc.weight
+            weight_loc = os.path.join('checkpoints/exp', args.load,'CP_best_val_score.pth')
+            # if not args.kalman_flag:
+            #     net.load_state_dict(torch.load(args.load, map_location=device))
+            # else:
+            #     UNet_weights = torch.load(args.load, map_location=device)
+            #     for name, params in net.named_parameters():
+            #         if 'kalman' not in name:
+            #             params = UNet_weights[name]
+                        # params.requires_grad = False 
+            net.load_state_dict(torch.load(weight_loc, map_location=device))        
+            # print(net.UNet.inc.double_conv[0].weight[0])
+            logging.info(f'Model loaded from {args.load}')
 
 
-        net = TwoStreamUNet(args,device=device, **kwargs)
-  
-        # freeze flownet parameters
-        # ipdb.set_trace()
-        # for tag, value in net.named_parameters():
-        #     print("tag = " , tag , "  " , value.requires_grad)
-    net.to(device=device)
-    # faster convolutions, but more memory
-    # cudnn.benchmark = True
-
-    if args.load:
-        # to check weights : net.UNet.inc.weight
-        weight_loc = os.path.join('checkpoints/exp', args.load,'CP_best_val_score.pth')
-        # if not args.kalman_flag:
-        #     net.load_state_dict(torch.load(args.load, map_location=device))
-        # else:
-        #     UNet_weights = torch.load(args.load, map_location=device)
-        #     for name, params in net.named_parameters():
-        #         if 'kalman' not in name:
-        #             params = UNet_weights[name]
-                    # params.requires_grad = False 
-        net.load_state_dict(torch.load(weight_loc, map_location=device))        
-        # print(net.UNet.inc.double_conv[0].weight[0])
-        logging.info(f'Model loaded from {args.load}')
-
-
-    try:
-        train_net(net= net, args= args, device=device, **kwargs)
-
-    except KeyboardInterrupt:        
-        pass
-        # torch.save(net.state_dict(), os.path.join(dir_checkpoint,'INTERRUPTED.pth'))
-        # logging.info('Saved interrupt')
         try:
-            sys.exit(0)
-        except SystemExit:
-            os._exit(0)
+            train_net(net= net, args= args, device=device, **kwargs)
+            del net
+        except KeyboardInterrupt:        
+            pass
+            # torch.save(net.state_dict(), os.path.join(dir_checkpoint,'INTERRUPTED.pth'))
+            # logging.info('Saved interrupt')
+            try:
+                sys.exit(0)
+            except SystemExit:
+                os._exit(0)
     # else:
     #     eval_net(net, data, n_classes, criterion, device)
